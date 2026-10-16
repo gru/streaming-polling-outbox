@@ -32,6 +32,9 @@ docker compose up -d --build    # сборка Patroni-образа + запус
 
 ## Полезные команды
 
+Пароли в примерах (`postgres`, `writer_secret`, …) — значения по умолчанию
+из `.env.example`; при смене подставляйте свои.
+
 ```bash
 # Состояние Patroni-кластера (кто leader / sync_standby)
 curl -s localhost:8008/cluster | python3 -m json.tool
@@ -67,6 +70,8 @@ docker compose exec kafka1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server loc
 
 ```
 docker-compose.yml              — вся инфраструктура
+.env.example                    — шаблон переменных окружения (cp .env.example .env)
+AGENTS.md                       — инструкция для agентов (ограничения, грабли)
 infrastructure/
   patroni/                      — Dockerfile (postgres:17.2 + patroni 4.1.5) и patroni.yml
   postgres/init/                — идемпотентный SQL-bootstrap (роли, publication, слот)
@@ -75,7 +80,8 @@ scripts/
   check-infra.sh                — полная проверка стенда (exit 0 = всё зелёное)
   init/apply-bootstrap.sh       — повторный запуск инициализации БД
   reset/wipe.sh                 — полный сброс (down -v)
-docs/deviations.md              — отклонения от ТЗ и их причины
+docs/
+  deviations.md                 — отклонения от ТЗ и их причины
 ```
 
 ## Что дальше (по плану requirements.md)

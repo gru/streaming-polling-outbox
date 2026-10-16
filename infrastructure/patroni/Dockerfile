@@ -5,7 +5,7 @@ FROM postgres:17.2
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 python3-pip \
-    && pip3 install --no-cache-dir --break-system-packages "patroni[etcd3]==4.1.5" "psycopg2-binary" \
+    && pip3 install --no-cache-dir --break-system-packages "patroni[etcd3]==4.1.5" "psycopg2-binary==2.9.10" \
     && apt-get purge -y python3-pip \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*

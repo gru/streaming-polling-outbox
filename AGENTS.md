@@ -1,15 +1,17 @@
 # AGENTS.md
 
-Исследовательский стенд: сравнение двух способов доставки transactional logical messages из PostgreSQL 17 в Kafka — **SQL Polling** (`pg_logical_slot_peek_binary_changes()`) vs **Npgsql Streaming Replication** (`pgoutput`). НЕ git-репозиторий.
+Исследовательский стенд: сравнение двух способов доставки transactional logical messages из PostgreSQL 17 в Kafka — **SQL Polling** (`pg_logical_slot_peek_changes()` + advance) vs **Npgsql Streaming Replication**. Git-репозиторий, ветка `main`.
 
 ## Документы (читать перед работой)
 
 - `requirements.md` — **единый авторитетный spec** (объединяет `prd.md` и `prd-2.md`; правила prd-2 по WAL retention имеют приоритет). Все детали: роли, HA-тесты TEST-HA-001…008, метрики, план этапов 1–10, критерии готовности, риски RISK-001…010.
 - `prd.md`, `prd-2.md` — исходные PRD; использовать только как справку, при расхождениях главенствует `requirements.md`.
+- `docs/deviations.md` — отклонения от ТЗ, обнаруженные практикой (в т.ч. pgoutput → test_decoding).
+- `README.md` — быстрый старт и полезные команды.
 
 ## Текущее состояние
 
-Кода нет — только требования. Целевая структура репозитория описана в `requirements.md` раздел 18 (`src/Writer`, `src/Cdc.Polling`, `src/Cdc.Streaming`, `src/Shared`, `src/KafkaValidator`, `infrastructure/`, `scripts/`, `tests/`, `results/`, `docs/`).
+**Этап 1 (инфраструктура) выполнен и проверен** (`scripts/check-infra.sh` — все проверки зелёные): Patroni 4.1.5 + PostgreSQL 17.2 ×3 (синхронная репликация, failover-слот синхронизируется), etcd ×3, HAProxy, PgBouncer, Kafka KRaft 3.9.0 ×3 (topic `outbox.events`), Prometheus, идемпотентная инициализация (роли, БД, publication, слот). .NET-сервисов (Writer, CDC) ещё нет — это этапы 3+; полная целевая структура репозитория в `requirements.md` раздел 18.
 
 ## Критические жёсткие ограничения (requirements.md, раздел 2)
 
