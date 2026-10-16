@@ -1,0 +1,28 @@
+# Секреты (в репозитории — только .env.example)
+.env
+.env.*
+!.env.example
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+artifacts/
+TestResults/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Docker
+docker-compose.override.yml
+
+# Результаты тестовых прогонов (крупные артефакты: JSON/CSV метрик)
+results/raw/
+
+# Локальные данные стендов (volume-директории, если появятся)
+volumes/
+data/
