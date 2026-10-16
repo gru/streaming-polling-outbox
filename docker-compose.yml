@@ -195,8 +195,7 @@ services:
       - ./infrastructure/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     networks: [outbox-net]
     ports:
-      # 15432, т.к. хост-порт 5432 занят контейнером другого проекта (airo-postgres)
-      - "15432:5432"
+      - "5432:5432"
       - "8404:8404"
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 8404"]

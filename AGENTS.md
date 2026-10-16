@@ -36,7 +36,7 @@
 - Инвалидированный слот ≠ пересоздать молча: явная ошибка с диагностикой.
 - После рестарта стенда на репликах остаются несинхронизированные остатки слота (slotsync worker падает с "same name slot exists") — их роняет 03-slot-reconcile.sql из init-db.
 - `synchronized_standby_slots` принимает только ФИЗИЧЕСКИЕ слоты; пишется через ALTER SYSTEM локально — после смены primary перезапустить apply-bootstrap.sh.
-- PgBouncer: userlist с plaintext-паролями генерируется init-db из .env (SCRAM pass-through с верификаторами из pg_authid на этой сборке не работает); хост-порт HAProxy 15432 (5432 занят другим проектом).
+- PgBouncer: userlist с plaintext-паролями генерируется init-db из .env (SCRAM pass-through с верификаторами из pg_authid на этой сборке не работает); хост-порт HAProxy 5432 (занявший его раньше airo-postgres остановлен вручную, policy unless-stopped).
 
 ## Роли PostgreSQL
 

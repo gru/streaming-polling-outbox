@@ -27,7 +27,7 @@ docker compose up -d --build    # сборка Patroni-образа + запус
 ./scripts/check-infra.sh        # полная проверка (все проверки должны быть ✔)
 ```
 
-Хост-порты: HAProxy (primary) — **15432**, PgBouncer — 6432, Patroni REST —
+Хост-порты: HAProxy (primary) — **5432**, PgBouncer — 6432, Patroni REST —
 8008/8009/8010, Kafka — 9092-9094, Prometheus — 9090, HAProxy stats — 8404.
 
 ## Полезные команды
