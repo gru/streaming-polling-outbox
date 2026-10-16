@@ -1,0 +1,29 @@
+# Prometheus: pull model, scrape interval ~5s (requirements.md раздел 13).
+# Grafana/Pushgateway запрещены требованиями и не настраиваются.
+# Джобы для .NET-сервисов (Writer/CDC, /metrics) будут добавлены на этапе 6.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+  external_labels:
+    stand: streaming-polling-outbox
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: etcd
+    static_configs:
+      - targets:
+          - etcd1:2379
+          - etcd2:2379
+          - etcd3:2379
+
+  # Placeholder'ы для будущих сервисов (этап 3+):
+  # - job_name: writer
+  #   static_configs: [{ targets: ['writer:8080'] }]
+  # - job_name: cdc-polling
+  #   static_configs: [{ targets: ['cdc-polling:8080'] }]
+  # - job_name: cdc-streaming
+  #   static_configs: [{ targets: ['cdc-streaming:8080'] }]

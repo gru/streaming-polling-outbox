@@ -1,0 +1,410 @@
+# Инфраструктура исследовательского стенда (requirements.md, раздел 3).
+# Этап 1: Patroni/PostgreSQL 17 + etcd + HAProxy + PgBouncer + Kafka KRaft + Prometheus.
+
+name: streaming-polling-outbox
+
+networks:
+  outbox-net:
+    driver: bridge
+    ipam:
+      config:
+        # Фиксированная подсеть для детерминизма адресов стенда
+        # (диапазоны 172.16-31 на этой машине заняты другими Docker-сетями)
+        - subnet: 10.99.0.0/16
+
+volumes:
+  etcd1_data: {}
+  etcd2_data: {}
+  etcd3_data: {}
+  pg1_data: {}
+  pg2_data: {}
+  pg3_data: {}
+  kafka1_data: {}
+  kafka2_data: {}
+  kafka3_data: {}
+  prometheus_data: {}
+  pgbouncer_config: {}
+
+services:
+
+  # ---------- DCS для Patroni ----------
+
+  etcd1:
+    image: gcr.io/etcd-development/etcd:v3.5.17
+    command:
+      - etcd
+      - --name=etcd1
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd1:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd1:2380
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-token=outbox-etcd
+      - --initial-cluster-state=new
+      - --auto-compaction-retention=1
+    networks: [outbox-net]
+    volumes:
+      - etcd1_data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=http://localhost:2379", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  etcd2:
+    image: gcr.io/etcd-development/etcd:v3.5.17
+    command:
+      - etcd
+      - --name=etcd2
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd2:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd2:2380
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-token=outbox-etcd
+      - --initial-cluster-state=new
+      - --auto-compaction-retention=1
+    networks: [outbox-net]
+    volumes:
+      - etcd2_data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=http://localhost:2379", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  etcd3:
+    image: gcr.io/etcd-development/etcd:v3.5.17
+    command:
+      - etcd
+      - --name=etcd3
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd3:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd3:2380
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-token=outbox-etcd
+      - --initial-cluster-state=new
+      - --auto-compaction-retention=1
+    networks: [outbox-net]
+    volumes:
+      - etcd3_data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=http://localhost:2379", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------- PostgreSQL 17 / Patroni ----------
+
+  pg1:
+    build: ./infrastructure/patroni
+    image: streaming-polling-outbox/patroni-pg17:4.1.5
+    environment: &patroni-env
+      PATRONI_NAME: pg1
+      PATRONI_RESTAPI_CONNECT_ADDRESS: pg1:8008
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: pg1:5432
+      PATRONI_RESTAPI_AUTHENTICATION_PASSWORD: ${PATRONI_API_PASSWORD:-patroni}
+      PATRONI_POSTGRESQL_AUTHENTICATION_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PATRONI_POSTGRESQL_AUTHENTICATION_REPLICATION_USERNAME: postgres
+      PATRONI_POSTGRESQL_AUTHENTICATION_REPLICATION_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    networks: [outbox-net]
+    volumes:
+      - pg1_data:/var/lib/postgresql/data
+    ports:
+      - "8008:8008"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8008/health', timeout=3).status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      etcd1: {condition: service_healthy}
+      etcd2: {condition: service_healthy}
+      etcd3: {condition: service_healthy}
+
+  pg2:
+    build: ./infrastructure/patroni
+    image: streaming-polling-outbox/patroni-pg17:4.1.5
+    environment:
+      <<: *patroni-env
+      PATRONI_NAME: pg2
+      PATRONI_RESTAPI_CONNECT_ADDRESS: pg2:8008
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: pg2:5432
+    networks: [outbox-net]
+    volumes:
+      - pg2_data:/var/lib/postgresql/data
+    ports:
+      - "8009:8008"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8008/health', timeout=3).status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      etcd1: {condition: service_healthy}
+      etcd2: {condition: service_healthy}
+      etcd3: {condition: service_healthy}
+
+  pg3:
+    build: ./infrastructure/patroni
+    image: streaming-polling-outbox/patroni-pg17:4.1.5
+    environment:
+      <<: *patroni-env
+      PATRONI_NAME: pg3
+      PATRONI_RESTAPI_CONNECT_ADDRESS: pg3:8008
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: pg3:5432
+    networks: [outbox-net]
+    volumes:
+      - pg3_data:/var/lib/postgresql/data
+    ports:
+      - "8010:8008"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8008/health', timeout=3).status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      etcd1: {condition: service_healthy}
+      etcd2: {condition: service_healthy}
+      etcd3: {condition: service_healthy}
+
+  # ---------- Маршрутизация на primary ----------
+
+  haproxy:
+    image: haproxy:3.0-alpine
+    volumes:
+      - ./infrastructure/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks: [outbox-net]
+    ports:
+      # 15432, т.к. хост-порт 5432 занят контейнером другого проекта (airo-postgres)
+      - "15432:5432"
+      - "8404:8404"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 8404"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+    depends_on:
+      pg1: {condition: service_healthy}
+      pg2: {condition: service_healthy}
+      pg3: {condition: service_healthy}
+
+  # ---------- Идемпотентная инициализация БД (one-shot) ----------
+  # Создаёт роли, БД outbox, publication, failover slot; генерирует userlist
+  # для PgBouncer из pg_authid (SCRAM-верификаторы).
+
+  init-db:
+    image: postgres:17.2
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      SYS_WRITER_PASSWORD: ${SYS_WRITER_PASSWORD:?set in .env}
+      SYS_APP_PASSWORD: ${SYS_APP_PASSWORD:?set in .env}
+      SYS_REPLICATION_PASSWORD: ${SYS_REPLICATION_PASSWORD:?set in .env}
+    volumes:
+      - ./infrastructure/postgres/init:/init:ro
+      - pgbouncer_config:/pgbouncer-config
+    networks: [outbox-net]
+    entrypoint:
+      - /bin/bash
+      - -ceu
+      - |
+        echo "[init-db] Waiting for Patroni primary via haproxy..."
+        until psql -h haproxy -U postgres -d postgres -tAc "SELECT pg_is_in_recovery()" 2>/dev/null | grep -q f; do
+          sleep 2
+        done
+        for f in /init/00-roles.sql /init/01-db-publication.sql /init/02-slot.sql; do
+          echo "[init-db] Applying $$f"
+          psql -v ON_ERROR_STOP=1 -h haproxy -U postgres -d postgres \
+            -v sys_writer_password="$$SYS_WRITER_PASSWORD" \
+            -v sys_app_password="$$SYS_APP_PASSWORD" \
+            -v sys_replication_password="$$SYS_REPLICATION_PASSWORD" \
+            -f "$$f"
+        done
+        # 03 выполняется на каждой ноде напрямую (реплики недоступны через HAProxy)
+        for node in pg1 pg2 pg3; do
+          echo "[init-db] Reconciling slot on $$node"
+          psql -v ON_ERROR_STOP=1 -h "$$node" -U postgres -d postgres -f /init/03-slot-reconcile.sql
+        done
+        echo "[init-db] Generating PgBouncer userlist (plaintext from .env)..."
+        # SCRAM pass-through (userlist из pg_authid) на этой сборке PgBouncer
+        # стабильно отклоняется сервером для прикладных ролей при байт-в-байт
+        # идентичных верификаторах. Plaintext в auth_file официально поддерживает
+        # любой метод бэкенда; клиенты при этом по-прежнему проходят SCRAM.
+        # Файл лежит в docker volume, в git не попадает.
+        {
+          printf '"postgres" "%s"\n' "$$POSTGRES_PASSWORD"
+          printf '"sys_writer" "%s"\n' "$$SYS_WRITER_PASSWORD"
+          printf '"sys_app" "%s"\n' "$$SYS_APP_PASSWORD"
+          printf '"sys_replication" "%s"\n' "$$SYS_REPLICATION_PASSWORD"
+        } > /pgbouncer-config/userlist.txt
+        chmod 644 /pgbouncer-config/userlist.txt
+        echo "[init-db] Bootstrap complete."
+    restart: "no"
+    depends_on:
+      haproxy: {condition: service_healthy}
+
+  # ---------- PgBouncer ----------
+
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.24.1-p1
+    entrypoint: ["pgbouncer", "/etc/pgbouncer/pgbouncer.ini"]
+    volumes:
+      - ./infrastructure/pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - pgbouncer_config:/etc/pgbouncer-auth:ro
+    networks: [outbox-net]
+    ports:
+      - "6432:6432"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 6432"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+    depends_on:
+      haproxy: {condition: service_healthy}
+      init-db: {condition: service_completed_successfully}
+
+  # ---------- Kafka KRaft ----------
+
+  kafka1:
+    image: apache/kafka:3.9.0
+    environment: &kafka-env
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka1:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka1:9093,2@kafka2:9093,3@kafka3:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms256m
+    networks: [outbox-net]
+    volumes:
+      - kafka1_data:/var/lib/kafka/data
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9092'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  kafka2:
+    image: apache/kafka:3.9.0
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka2:9092
+    networks: [outbox-net]
+    volumes:
+      - kafka2_data:/var/lib/kafka/data
+    ports:
+      - "9093:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9092'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  kafka3:
+    image: apache/kafka:3.9.0
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka3:9092
+    networks: [outbox-net]
+    volumes:
+      - kafka3_data:/var/lib/kafka/data
+    ports:
+      - "9094:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9092'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  # Явное создание topic отдельной командой (requirements.md 3.2);
+  # auto.create.topics.enable=false.
+  kafka-init:
+    image: apache/kafka:3.9.0
+    networks: [outbox-net]
+    entrypoint:
+      - /bin/bash
+      - -ceu
+      - |
+        echo "[kafka-init] Creating topic outbox.events..."
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka1:9092 \
+          --create --if-not-exists \
+          --topic outbox.events \
+          --partitions 6 \
+          --replication-factor 3 \
+          --config min.insync.replicas=2
+        echo "[kafka-init] Done."
+    restart: "no"
+    depends_on:
+      kafka1: {condition: service_healthy}
+      kafka2: {condition: service_healthy}
+      kafka3: {condition: service_healthy}
+
+  # ---------- Prometheus ----------
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks: [outbox-net]
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped

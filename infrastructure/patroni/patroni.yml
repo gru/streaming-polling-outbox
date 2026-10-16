@@ -1,0 +1,92 @@
+# Общая конфигурация Patroni для всех нод кластера.
+# Отличия нод (name, connect_address) задаются через переменные окружения
+# PATRONI_* в docker-compose.yml — Patroni переопределяет ими значения из файла.
+# Документация: https://patroni.readthedocs.io/en/latest/yaml_configuration.html
+
+scope: outbox-cluster
+namespace: /service/
+
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: 127.0.0.1:8008  # переопределяется: PATRONI_RESTAPI_CONNECT_ADDRESS
+  # /primary, /replica, /health не требуют аутентификации — их использует HAProxy.
+  authentication:
+    username: patroni
+    password: patroni  # переопределяется: PATRONI_RESTAPI_AUTHENTICATION_PASSWORD
+
+etcd3:
+  # gRPC-клиент не используется, чтобы не тянуть зависимости: чистый HTTP/JSON gateway.
+  use_grpc: false
+  hosts: etcd1:2379,etcd2:2379,etcd3:2379
+
+postgresql:
+  listen: 0.0.0.0:5432
+  connect_address: 127.0.0.1:5432  # переопределяется: PATRONI_POSTGRESQL_CONNECT_ADDRESS
+  data_dir: /var/lib/postgresql/data
+  bin_dir: /usr/lib/postgresql/17/bin
+  pgpass: /var/lib/postgresql/pgpass
+
+  # Внутренняя репликация кластера идёт от имени postgres (инфраструктурная
+  # учётка, не прикладная; прикладные роли — см. infrastructure/postgres/init).
+  authentication:
+    superuser:
+      username: postgres
+      password: postgres  # переопределяется: PATRONI_POSTGRESQL_AUTHENTICATION_SUPERUSER_PASSWORD
+    replication:
+      username: postgres
+      password: postgres  # переопределяется: PATRONI_POSTGRESQL_AUTHENTICATION_REPLICATION_PASSWORD
+
+  parameters:
+    unix_socket_directories: /var/run/postgresql
+    log_min_messages: warning
+
+  pg_hba:
+    # Тестовый стенд: pg_hba максимально лоялен и не ограничивает по хостам/сетям —
+    # ограничения источника не относятся к задаче исследования. Аутентификация
+    # паролем (scram) сохранена: она нужна для проверки подключения прикладных
+    # ролей через PgBouncer. Минимальные привилегии реализуются на уровне GRANT
+    # (infrastructure/postgres/init), а не pg_hba.
+    - local all all trust
+    - host all all 0.0.0.0/0 scram-sha-256
+    - host all all ::/0 scram-sha-256
+    - host replication all 0.0.0.0/0 scram-sha-256
+    - host replication all ::/0 scram-sha-256
+
+watchdog:
+  mode: off  # в контейнере нет доступа к /dev/watchdog
+
+bootstrap:
+  method: initdb
+  dcs:
+    ttl: 30
+    loop_wait: 5
+    retry_timeout: 10
+    maximum_lag_on_failover: 33554432
+    # Синхронная физическая репликация (requirements.md раздел 3.1),
+    # не strict: при отсутствии sync-standby кластер остаётся доступным на запись.
+    synchronous_mode: true
+    synchronous_mode_strict: false
+    postgresql:
+      use_pg_rewind: false
+      # Кластерные параметры. wal_level и др. входят в CMDLINE_OPTIONS Patroni
+      # и применяются ко ВСЕМ нодам только через dynamic config (DCS);
+      # member-local postgresql.parameters для них игнорируются.
+      parameters:
+        password_encryption: scram-sha-256
+        max_connections: 300
+        shared_buffers: 128MB
+        # requirements.md раздел 4.4: logical replication + failover slots PG17.
+        # wal_level=logical нужен и на standby: иначе slotsync worker падает с FATAL.
+        wal_level: logical
+        max_replication_slots: 10
+        max_wal_senders: 10
+        # Нативная синхронизация failover logical slots на standby (PG17).
+        hot_standby_feedback: on
+        sync_replication_slots: on
+        # Без ограничения удержания WAL в нормальном режиме (requirements.md 12.1;
+        # лимит для WAL Pressure Test применяется отдельно).
+        max_slot_wal_keep_size: -1
+  initdb:
+    - encoding: UTF8
+    - locale: C.UTF-8
+    - data-checksums

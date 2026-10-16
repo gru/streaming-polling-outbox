@@ -15,6 +15,7 @@ TestResults/
 # IDE / OS
 .idea/
 .vscode/
+.zcode/
 .DS_Store
 
 # Docker
