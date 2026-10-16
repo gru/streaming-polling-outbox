@@ -25,6 +25,7 @@
 
 ## Ключевые технические грабли
 
+- **Остатки от предыдущих прогонов/раскладок НЕ чистятся кодом инициализации.** Init-скрипты только создают объекты идемпотентно (CREATE IF NOT EXISTS). Если есть подозрение, что в стенде что-то осталось от прошлого прогона (чужая БД, слот с другим плагином, лишние роли) — не дописывать миграции в init, а полностью очистить стенд: `./scripts/reset/wipe.sh` (docker compose down -v) и поднять заново.
 - `max_slot_wal_keep_size` считается от **фактически измеренного объёма WAL** (разница LSN), НЕ от размера payload; в нормальных тестах `-1`, лимит только в отдельном WAL Pressure Test.
 - **pgoutput не эмитит logical messages** (ни в одной версии PG) — слот `outbox_slot` на плагине `test_decoding`; Polling парсит текст `pg_logical_slot_peek_changes`, Streaming использует generic Npgsql API, не `PgOutputReplicationSlot`.
 - Прикладная БД — **`postgres`** (не отдельная `outbox`): PG17 slotsync worker синхронизирует слоты только БД из `primary_conninfo`, а Patroni хардкодит там `dbname=postgres`.

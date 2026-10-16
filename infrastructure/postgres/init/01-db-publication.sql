@@ -9,11 +9,6 @@
 -- переопределить без смены БД самого Patroni (postgresql.database), что ломает
 -- первый bootstrap. Слот и publication в `postgres` синхронизируются штатно.
 
--- Удаляем БД past-итерации, если осталась от предыдущей раскладки.
--- (SELECT pg_terminate_backend(pid) ... \gexec здесь не годится: \gexec
--- выполняет бы результат вызова 't' как SQL.)
-DROP DATABASE IF EXISTS outbox;
-
 -- Отзыв избыточных прав PUBLIC, затем явные минимальные GRANT (requirements.md 5.1).
 -- CONNECT: writer пишет logical messages; app вызывает polling-функции;
 -- replication подключается по протоколу логической репликации.

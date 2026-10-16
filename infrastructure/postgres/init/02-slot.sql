@@ -12,13 +12,6 @@
 -- PostgreSQL 17 (sync_replication_slots + hot_standby_feedback включены
 -- в patroni.yml). Patroni permanent slots не используются (requirements.md).
 
--- Если слот существует с другим плагином (например, pgoutput из прошлой
--- итерации) — пересоздаём. Активный слот дропнуть нельзя: упадёт с ошибкой,
--- но транзиентная активность slotsync worker'а коротка, init повторяем.
-SELECT format('SELECT pg_drop_replication_slot(%L)', slot_name)
-FROM pg_replication_slots
-WHERE slot_name = 'outbox_slot' AND plugin <> 'test_decoding' \gexec
-
 SELECT format('SELECT pg_create_logical_replication_slot(slot_name => %L, plugin => %L, failover => true)', 'outbox_slot', 'test_decoding')
 WHERE NOT EXISTS (SELECT FROM pg_replication_slots WHERE slot_name = 'outbox_slot') \gexec
 

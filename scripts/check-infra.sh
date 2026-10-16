@@ -90,8 +90,6 @@ pool_mode=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h pgbouncer
 section "PostgreSQL: прикладная БД (postgres), publication, replication protocol"
 # Прикладная БД — postgres: PG17 slotsync worker синхронизирует слоты только
 # БД из primary_conninfo (см. infrastructure/postgres/init/01-db-publication.sql).
-db=$(psql_primary -Atc "SELECT 1 FROM pg_database WHERE datname='outbox'")
-[[ "$db" != "1" ]] && ok "лишняя БД outbox отсутствует (прикладная БД — postgres)" || bad "нашлаcь лишняя БД outbox"
 pub=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d postgres -Atc "SELECT count(*) FROM pg_publication WHERE pubname='outbox_publication'")
 [[ "$pub" == "1" ]] && ok "publication outbox_publication существует" || bad "publication не найдена"
 pub_tables=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d postgres -Atc "SELECT count(*) FROM pg_publication_tables WHERE pubname='outbox_publication'")
