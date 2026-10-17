@@ -125,9 +125,17 @@ INSERT INTO public.outbox_messages (id, topic, body) VALUES ('00000000-0000-7000
 DELETE FROM public.outbox_messages WHERE id = '00000000-0000-7000-8000-000000000c0d';
 COMMIT;"
 
-# Посмотреть содержимое слота, не потребляя (бинарный pgoutput: B/R/I/C записи)
-docker compose exec -e PGPASSWORD=postgres pg1 psql -h localhost -U postgres -d outbox \
+# Посмотреть содержимое слота, не потребляя (бинарный pgoutput: B/R/I/C записи).
+# Через haproxy — на актуальный primary (peek/get работают только на primary)
+docker compose exec -e PGPASSWORD=postgres pg1 psql -h haproxy -U postgres -d outbox \
   -c "SELECT lsn, xid FROM pg_logical_slot_peek_binary_changes('outbox_slot', NULL, 20, 'proto_version','1','publication_names','outbox_publication')"
+
+# Продвинуть слот (get вместо peek потребляет и двигает LSN/xmin).
+# Нужен перед failover/switchover-экспериментами, пока нет CDC: непотребляемый
+# слот перестаёт синхронизироваться на стендбаях и не переживает promotion —
+# документированное поведение PG17, см. docs/deviations.md раздел 3
+docker compose exec -e PGPASSWORD=postgres pg1 psql -h haproxy -U postgres -d outbox \
+  -Atc "SELECT count(*) FROM pg_logical_slot_get_binary_changes('outbox_slot', NULL, NULL, 'proto_version','1','publication_names','outbox_publication')"
 
 # Состояние слотов на всех нодах (failover sync)
 for n in pg1 pg2 pg3; do docker compose exec -e PGPASSWORD=postgres $n \

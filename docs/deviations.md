@@ -94,20 +94,100 @@ logical replication через слот (peek + advance против Npgsql-ст
 слот пережил promotion с сохранением restart_lsn, peek работает на новом
 leader, стендбаи пересинхронизируют слот; check-infra 42/42, smoke-writer 26/26.
 
-**Выявленное ограничение PG17 (важно для этапов 4–5):** непотребляемый слот
-(CDC ещё не читает и не подтверждает LSN) со временем перестаёт
-синхронизироваться: воркер пишет `could not synchronize replication slot ...
-remote slot precedes local slot` (catalog_xmin стендбая обогнал слот), и при
-promotion такой слот НЕ сохраняется — «the slot will not be persisted to avoid
-data loss» ([docs §47.2.3](https://www.postgresql.org/docs/17/logicaldecoding-explanation.html)).
-Это документированное поведение, не баг. Лекарство из документации — продвигать
-слот (consume/`pg_logical_slot_get_binary_changes`); в реальном benchmark CDC
-делает это непрерывно после Kafka delivery, поэтому условие не возникает. До
-появления CDC: перед failover-экспериментами продвигать слот вручную; после
-demotion старый leader держит несинхронизированный остаток слота — убирается
-`scripts/init/apply-bootstrap.sh` (03-slot-reconcile.sql).
+**Выявленное ограничение PG17** (непотребляемый слот и failover-синхронизация,
+важно для этапов 4–5) — вынесено в отдельный раздел 3 ниже.
 
-## 3. Прочее (некритическое)
+## 3. Непотребляемый logical-слот не переживает failover (документированное поведение PG17)
+
+Обнаружено при первом контролируемом switchover-тесте после миграции прикладной
+БД на `outbox` (2026-10-17): слот, который никто не читает, при promotion
+стендбая **исчезает на новом leader**. Это не баг миграции и не баг PostgreSQL —
+ровно это состояние описано в документации
+[PostgreSQL 17, §47.2.3 «Replication Slot Synchronization»](https://www.postgresql.org/docs/17/logicaldecoding-explanation.html#LOGICALDECODING-REPLICATION-SLOTS-SYNCHRONIZATION).
+
+### Механика (по документации)
+
+Синхронизированная копия слота сохраняется на стендбае (и переживёт promotion)
+только при условии сохранности нужных каталогов и WAL — дословно:
+
+> «the standby can persist the synchronized slot only if the following
+> condition is met: The logical replication slot on the primary must retain
+> WALs and system catalog rows that are still available on the standby.»
+
+> «If the required WALs or catalog rows have already been purged from the
+> standby, the slot will not be persisted to avoid data loss.»
+
+Если слот никто не потребляет, его `restart_lsn`/`confirmed_flush_lsn` и
+catalog_xmin на primary стоят на месте, а catalog_xmin стендбая уходит вперёд
+(горизонт каталожных строк стендбая движется с кластером). Воркер отказывается
+синхронизировать такую копию — пример из документации (наш случай 1-в-1,
+формулировка примера чуть отличается от фактической в 17.2):
+
+> `LOG: could not synchronize replication slot "failover_slot"`
+> `DETAIL: Synchronization could lead to data loss, because the remote slot
+> needs WAL at LSN 0/3003F28 and catalog xmin 754, but the standby has
+> LSN 0/3003F28 and catalog xmin 756.`
+
+Фактическое сообщение на стенде (PG 17.2, до switchover):
+
+```
+LOG:  could not synchronize replication slot "outbox_slot" because remote slot precedes local slot
+DETAIL:  The remote slot has LSN 0/40318A0 and catalog xmin 741, but the local slot has LSN 0/40318A0 and catalog xmin 773.
+```
+
+LSN совпадают, catalog_xmin стендбая (773) обогнал слот (741) — копия не
+«sync-ready», и при promotion она отбрасывается. Дословно про условие
+выживания:
+
+> «The ability to resume logical replication after failover depends upon the
+> pg_replication_slots.synced value for the synchronized slots on the standby
+> at the time of failover. Only persistent slots that have attained synced
+> state as true on the standby before failover can be used for logical
+> replication after failover.»
+
+### Лекарство — из той же документации
+
+> «If the logical replication slot is actively used by a consumer, no manual
+> intervention is needed; the slot will advance automatically, and
+> synchronization will resume in the next cycle. However, if no consumer is
+> configured, it is advisable to manually advance the slot on the primary
+> using pg_logical_slot_get_changes or pg_logical_slot_get_binary_changes.»
+
+### Эмпирика на стенде (2026-10-17)
+
+1. Первый switchover (pg3→pg2) при непотребляемом слоте: слот исчез на новом
+   leader, копия на втором стендбае тоже пропала — «not persisted to avoid
+   data loss».
+2. `pg_logical_slot_get_binary_changes()` на primary (аналог advance CDC):
+   restart_lsn/confirmed_flush_lsn/catalog_xmin продвинулись до текущего
+   горизонта; через ~40 с воркер перестал писать ошибки синхронизации.
+3. Второй switchover (pg2→pg1): слот **пережил promotion** — на новом leader
+   `outbox_slot` с `failover=true`, `wal_status=reserved`, `restart_lsn` равен
+   точке consume (данные не потеряны); оба стендбая пересинхронизировали копию
+   (`synced=true`).
+4. Прогон Writer (500 сообщений) через нового leader: 500 written / 0 failed /
+   0 ambiguous, peek растёт, таблица пуста.
+
+### Выводы для стенда
+
+- В реальном benchmark условие не возникает: CDC потребляет слот и подтверждает
+  LSN после Kafka delivery непрерывно (requirements.md 8-9).
+- До появления CDC (этапы 4-5) перед failover/switchover-экспериментами
+  продвигать слот вручную на primary:
+  `SELECT count(*) FROM pg_logical_slot_get_binary_changes('outbox_slot', NULL, NULL, 'proto_version','1','publication_names','outbox_publication')`
+  (бд `outbox`; peek — НЕ продвигает, get — продвигает).
+- После demotion старый leader держит несинхронизированный остаток слота —
+  убирается `./scripts/init/apply-bootstrap.sh` (03-slot-reconcile.sql).
+- `synced=true` у слота на новом leader после promotion — норма (это
+  промоутнутая синхронизированная копия), не признак рассинхрона.
+- Связанное требование документации (выполнено в стенде): на стендбае
+  обязательны `hot_standby_feedback` и `primary_slot_name`
+  ([§47.2.3](https://www.postgresql.org/docs/17/logicaldecoding-explanation.html#LOGICALDECODING-REPLICATION-SLOTS-SYNCHRONIZATION),
+  [§19.6.3 primary_conninfo](https://www.postgresql.org/docs/17/runtime-config-replication.html#GUC-PRIMARY-CONNINFO):
+  «For replication slot synchronization it is also necessary to specify a
+  valid dbname in the primary_conninfo string»).
+
+## 4. Прочее (некритическое)
 
 - **pg_hba максимально лоялен** (по решению владельца): ограничения источника не
   относятся к задаче; аутентификация scram сохранена. Минимальные привилегии
