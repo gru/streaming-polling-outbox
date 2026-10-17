@@ -225,10 +225,17 @@ EXECUTE — только у `sys_app` (PUBLIC отозван), `search_path = pg
 (requirements.md 5.3) — в `scripts/check-infra.sh` и
 `scripts/test/smoke-cdc-polling.sh`.
 
-**Попутно зафиксированные отличия PG17 от PG18** (важно для портируемости):
-`pg_replication_slot_advance` в PG17 возвращает `(slot_name, end_lsn)` —
-столбец `end_xid` появился в PG18; в `pg_replication_slots` PG17 нет колонки
-`persisted` (PG18), есть `synced`.
+**Попутно зафиксировано о версиях интерфейса слотов** (важно для портируемости;
+перепроверено 2026-10-16 по официальным докам PG17/18/19/devel и на стенде
+17.2): `pg_replication_slot_advance` во всех версиях возвращает `(slot_name,
+end_lsn)` — выходной колонки `end_xid` не существует ни в одной официальной
+версии (более ранняя редакция этого абзаца приписывала её PG18 — ошибка
+памяти). Колонки `persisted` в `pg_replication_slots` тоже нет ни в одной
+версии (PG18 добавил `two_phase_at`, PG19 — `slotsync_skip_reason`):
+«persistent slots» в [PG17 §47.2.3](https://www.postgresql.org/docs/17/logicaldecoding-explanation.html)
+— это прилагательное «не temporary» (антоним колонки `temporary`), а не колонка
+представления. В PG17 в это представление добавлены `failover` и `synced` —
+обе есть на стенде.
 
 ## 5. Прочее (некритическое)
 
