@@ -132,6 +132,10 @@ section "Сквозной smoke: INSERT+DELETE в одной транзакци�
 # Writer держит outbox пустым (решение владельца): строка существует только внутри
 # транзакции, сообщение живёт в WAL. Здесь проверяем, что такие изменения
 # logical decoding по-прежнему эмитит.
+# Если запущен cdc-polling — он потребляет слот непрерывно, и конкурентный peek
+# отсюда получит 55006 object_in_use; live-проверку peek пропускаем (сам CDC
+# проверяется отдельным smoke-cdc-polling.sh).
+cdc_polling_running=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c 'cdc-polling' || true)
 peek_count() {
   psql_primary -Atc "SELECT count(*) FROM pg_logical_slot_peek_binary_changes('outbox_slot', NULL, NULL, 'proto_version','1','publication_names','outbox_publication')" 2>/dev/null
 }
@@ -149,18 +153,60 @@ COMMIT;" 2>&1 | tr '\n' ' ')
 # у sys_writer только INSERT+DELETE и колоночный SELECT(id) (минимум по requirements.md 5).
 [[ "$inserted" == *"INSERT 0 1"* && "$inserted" == *"DELETE 1"* ]] && ok "sys_writer: INSERT+DELETE в одной транзакции через PgBouncer" || bad "INSERT+DELETE через PgBouncer: $inserted"
 after=""
-for _ in $(seq 1 15); do
-  after=$(peek_count)
-  delta=$(( ${after:-0} - before ))
-  [[ "$delta" -ge 3 ]] && break
-  sleep 2
-done
-# Одна вставленная и тут же удалённая строка = минимум 3 записи pgoutput
-# (Relation + Insert + Delete внутри транзакции; B/C-обрамление может объединяться
-# с соседними транзакциями — поэтому порог 3, а не 5).
-if [[ "$delta" -ge 3 ]]; then ok "peek (pgoutput, binary) видит изменения: было $before, стало $after (Δ$delta)"; else bad "peek не видит изменения (before=$before after=$after)"; fi
+if [[ "$cdc_polling_running" != "0" ]]; then
+  ok "cdc-polling запущен — live-peek отсюда пропущен (слот потребляет CDC, конкурентный peek = 55006)"
+else
+  for _ in $(seq 1 15); do
+    after=$(peek_count)
+    delta=$(( ${after:-0} - before ))
+    [[ "$delta" -ge 3 ]] && break
+    sleep 2
+  done
+  # Одна вставленная и тут же удалённая строка = минимум 3 записи pgoutput
+  # (Relation + Insert + Delete внутри транзакции; B/C-обрамление может объединяться
+  # с соседними транзакциями — поэтому порог 3, а не 5).
+  if [[ "$delta" -ge 3 ]]; then ok "peek (pgoutput, binary) видит изменения: было $before, стало $after (Δ$delta)"; else bad "peek не видит изменения (before=$before after=$after)"; fi
+fi
 rows_after=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d outbox -Atc "SELECT count(*) FROM public.outbox_messages")
 [[ "$rows_after" == "$rows_before" ]] && ok "outbox_messages не выросла (строка удалена в той же транзакции)" || bad "таблица выросла: $rows_before → $rows_after"
+
+section "CDC Polling: SECURITY DEFINER-функции (requirements.md 5.2)"
+# Схема cdc и три функции-обёртки: владелец postgres, SECURITY DEFINER,
+# search_path=pg_catalog, EXECUTE только у sys_app. Слот/publication/параметры
+# декодирования/лимит пачки жёстко зафиксированы внутри функций.
+funcs=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d outbox -Atc "
+  SELECT n.nspname||'.'||p.proname||'|'||p.prosecdef||'|'||array_to_string(p.proconfig,',')
+  FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+  WHERE n.nspname='cdc' ORDER BY p.proname" | sed 's/|true|/|t|/g')
+echo "$funcs" | sed 's/^/  /'
+fn_count=$(echo "$funcs" | grep -c '^cdc\.')
+[[ "$fn_count" == "3" ]] && ok "3 функции в схеме cdc" || bad "функций в схеме cdc: $fn_count"
+fn_badflags=$(echo "$funcs" | grep -cv '|t|search_path=pg_catalog' || true)
+[[ "$fn_count" == "3" && "$fn_badflags" == "0" ]] \
+  && ok "все функции SECURITY DEFINER с search_path=pg_catalog" \
+  || bad "не все функции SECURITY DEFINER/search_path (нарушений: $fn_badflags)"
+grants=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d outbox -Atc "
+  SELECT has_function_privilege('sys_app','cdc.peek_outbox_changes(integer)','EXECUTE')
+      || '|' || has_function_privilege('public','cdc.peek_outbox_changes(integer)','EXECUTE')")
+[[ "$grants" == "t|f" || "$grants" == "true|false" ]] && ok "EXECUTE только у sys_app (PUBLIC отозван)" || bad "grants: $grants"
+# Положительный вызов от sys_app через PgBouncer (минимальная роль, requirements.md 5.3).
+# status() не захватывает слот — безопасен и при работающем CDC.
+app_status=$($DC exec -T -e PGPASSWORD="$SYS_APP_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_app -d outbox -Atc "SELECT cdc.outbox_slot_status()::text" 2>&1)
+[[ "$app_status" == *'"exists": true'* ]] && ok "sys_app: cdc.outbox_slot_status() работает через PgBouncer" || bad "status от sys_app: $app_status"
+# ПРЯМОЙ peek от sys_app обязан падать (роль без привилегий на слот) — wrapper оправдан
+direct=$($DC exec -T -e PGPASSWORD="$SYS_APP_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_app -d outbox -Atc \
+  "SELECT count(*) FROM pg_logical_slot_peek_binary_changes('outbox_slot', NULL, 10, 'proto_version','1','publication_names','outbox_publication')" 2>&1)
+[[ "$direct" == *"permission denied"* ]] && ok "прямой peek от sys_app запрещён (permission denied — wrapper необходим)" || bad "прямой peek: $direct"
+if [[ "$cdc_polling_running" != "0" ]]; then
+  ok "cdc-polling запущен — live-проверки peek/advance от sys_app пропущены (слот занят CDC)"
+else
+  app_peek=$($DC exec -T -e PGPASSWORD="$SYS_APP_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_app -d outbox -Atc "SELECT count(*) FROM cdc.peek_outbox_changes(10)" 2>&1)
+  [[ "$app_peek" =~ ^[0-9]+$ ]] && ok "sys_app: cdc.peek_outbox_changes(10) работает (строк: $app_peek, peek не потребляет)" || bad "peek от sys_app: $app_peek"
+  # advance дальше watermark обязан отказывать («не подтверждай то, что не читал»)
+  adv=$($DC exec -T -e PGPASSWORD="$SYS_APP_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_app -d outbox -Atc \
+    "SELECT * FROM cdc.advance_outbox_slot('FFFFFFFF/FFFFFFFF')" 2>&1)
+  [[ "$adv" == *"отклонён"* ]] && ok "advance дальше watermark отклоняется (защита от подтверждения вслепую)" || bad "advance: $adv"
+fi
 
 section "Kafka: topic"
 topic_desc=$($DC exec -T kafka1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic outbox.events 2>&1)

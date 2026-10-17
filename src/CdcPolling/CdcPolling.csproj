@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>CdcPolling</RootNamespace>
+    <AssemblyName>CdcPolling</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Npgsql 8.0.x — та же линия, что у Writer (логика работы с LSN одинаковая). -->
+    <PackageReference Include="Npgsql" Version="8.0.9" />
+    <!-- KafkaFlow 4.2.0 — единая зафиксированная версия для всех CDC-сервисов
+         (requirements.md 9); Confluent.Kafka 2.8.0 приходит транзитивно и
+         используется только как носитель ProducerConfig, основной API — KafkaFlow.
+         Значение acks=all и enable.idempotence=true задаётся через
+         WithAcks + WithProducerConfig (extension из KafkaFlow). -->
+    <PackageReference Include="KafkaFlow" Version="4.2.0" />
+    <PackageReference Include="KafkaFlow.Extensions.Hosting" Version="4.2.0" />
+    <PackageReference Include="KafkaFlow.LogHandler.Console" Version="4.2.0" />
+    <!-- OTel 1.9.0 + Prometheus exporter (pull, /metrics) — как у Writer. -->
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.9.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.9.0-beta.2" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.9.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CdcCommon\CdcCommon.csproj" />
+  </ItemGroup>
+
+</Project>

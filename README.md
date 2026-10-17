@@ -39,6 +39,21 @@ slot (SELECT-polling таблицы не используется). Причин
 повтор батча с теми же UUID после сбоя соединения делает неоднозначный commit разрешимым
 (unique violation по PK = прошлый commit прошёл).
 
+**CDC Polling (этап 4, готов)** — `src/CdcPolling` + общая библиотека `src/CdcCommon`
+(парсер бинарного pgoutput — его же использует стриминг этапа 5). Цикл: **peek →
+разбор pgoutput → Kafka (KafkaFlow, acks=all, идемпотентный producer) → advance**;
+LSN подтверждается **только после** delivery-репорта Kafka (at-least-once, requirements.md 10):
+при недоступной Kafka подтверждения нет и WAL копится; инвалидированный слот — терминальная
+состояние ошибки с диагностикой, без молчаливого пересоздания. Читает от `sys_app` через
+SECURITY DEFINER-функции `cdc.peek_outbox_changes` / `cdc.advance_outbox_slot` /
+`cdc.outbox_slot_status` (слот/publication/параметры жёстко зашиты, advance дальше
+последнего прочитанного peek запрещён watermark-таблицей `cdc.peek_state`; почему wrapper —
+[docs/deviations.md](docs/deviations.md) §4). Insert-записи `public.outbox_messages` — события,
+Delete-записи игнорируются. Kafka key = `id` (дубли at-least-once попадают в одну партицию —
+консюмер дедуплицирует), value = конверт `{"id","topic","body","timestamp"}` (requirements.md 4.2).
+Запускается в compose-профиле **`polling`** (Polling и Streaming никогда не работают на одном
+слоте одновременно, requirements.md 11): `docker compose --profile polling up -d --build cdc-polling`.
+
 ## Быстрый старт
 
 ```bash
@@ -55,7 +70,8 @@ pg-контейнеры и уронить Patroni-кластер; пересбо
 `./scripts/reset/wipe.sh`.
 
 Хост-порты: HAProxy (primary) — **5432**, PgBouncer — 6432, Writer HTTP API — **18080**,
-Patroni REST — 8008/8009/8010, Kafka — 9092-9094, Prometheus — 9090, HAProxy stats — 8404.
+CDC Polling HTTP API — **18081**, Patroni REST — 8008/8009/8010, Kafka — 9092-9094,
+Prometheus — 9090, HAProxy stats — 8404.
 
 ## Writer: управление нагрузкой
 
@@ -98,6 +114,49 @@ curl -s -X POST $W/api/generation/start -H 'Content-Type: application/json' \
 
 Тело сообщения: `body = {"eventType":"TestEvent","runId":"<run guid>","payload":"<ASCII строка messageSizeBytes>"}`;
 `runId` уникален для прогона и используется валидатором Kafka (requirements.md разд. 15).
+
+## CDC Polling: запуск и наблюдение
+
+Запуск (профиль `polling`; обычный `docker compose up` его не поднимает):
+
+```bash
+docker compose --profile polling up -d --build cdc-polling
+./scripts/test/smoke-cdc-polling.sh   # живая проверка: доставка 500 сообщений, LSN, метрики, рестарт, batch size
+```
+
+HTTP API (порт `CDC_POLLING_HTTP_PORT`, по умолчанию 18081):
+
+```bash
+C=http://localhost:18081
+
+# Состояние: state, счётчики, lastReceived/confirmed LSN, WAL lag, слот, ошибки, p50/p95/p99 e2e
+curl -s $C/api/cdc/state | python3 -m json.tool
+
+# Health / readiness (ready = БД отвечает и слот валиден) / метрики
+curl -s $C/health; curl -s $C/ready; curl -s $C/metrics | grep cdc_polling_
+```
+
+Состояния: `running` → (`waiting_kafka` | `waiting_database`) → `running`;
+`error_slot` / `failed` — терминальные (диагностика в логах и `/api/cdc/state`,
+восстановление — устранить причину и перезапустить контейнер; слот не пересоздаётся молча).
+
+### Параметры (env, без правки кода)
+
+| .env-переменная | Что задаёт | По умолчанию |
+|---|---|---|
+| `CDC_POLLING_POLL_BATCH_SIZE` | сколько logical changes брать одним peek (1..10000; потолок зафиксирован в SECURITY DEFINER-функции) | 100 |
+| `CDC_POLLING_KAFKA_BATCH_SIZE` | прикладной batch публикации в Kafka (сообщений за цикл) | 100 |
+| `CDC_POLLING_CONNECTION_MODE` | `pgbouncer` \| `direct` (через HAProxy, мимо PgBouncer) | pgbouncer |
+| `CDC_POLLING_HTTP_PORT` | хост-порт HTTP API | 18081 |
+
+Смена значения: правка `.env` + `docker compose --profile polling up -d --no-deps cdc-polling`
+(контейнер пересоздаётся, позиция слота в БД — переживает). Это **разные** «батчи»:
+внутренний batching Confluent-продюсера (`LingerMs`), прикладной batch Kafka, peek-пачка —
+и отдельно подтверждение LSN, которое выполняется один раз на peek-выборку после доставки всего батча.
+
+⚠️ env-префикс конфигурации самого сервиса — `CDCPOLLING__` (без подчёркивания):
+провайдер .NET превращает в разделитель только двойные подчёркивания (подробнее —
+deviations.md §5).
 Прогон завершается по первой достигнутой цели из заданных (count / volume / duration);
 сброс соединения не прерывает прогон — ретраи с exponential backoff, дубликатов в outbox
 не возникает (PK-детект повторного commit), «неоднозначные» батчи честно считаются отдельно.
@@ -126,14 +185,26 @@ DELETE FROM public.outbox_messages WHERE id = '00000000-0000-7000-8000-000000000
 COMMIT;"
 
 # Посмотреть содержимое слота, не потребляя (бинарный pgoutput: B/R/I/C записи).
-# Через haproxy — на актуальный primary (peek/get работают только на primary)
+# Через haproxy — на актуальный primary (peek/get работают только на primary).
+# ВНИМАНИЕ: при запущенном cdc-polling конкурентный peek даст 55006 (слот занят CDC)
 docker compose exec -e PGPASSWORD=postgres pg1 psql -h haproxy -U postgres -d outbox \
   -c "SELECT lsn, xid FROM pg_logical_slot_peek_binary_changes('outbox_slot', NULL, 20, 'proto_version','1','publication_names','outbox_publication')"
 
+# То же от минимальной роли sys_app через защищённую функцию (счётчик записей)
+docker compose exec -e PGPASSWORD=app_secret pg1 \
+  psql "host=pgbouncer port=6432 user=sys_app dbname=outbox" \
+  -c "SELECT count(*) FROM cdc.peek_outbox_changes(100)"
+
+# Диагностика слота для CDC (wal_status/confirmed_flush_lsn/текущий WAL LSN)
+docker compose exec -e PGPASSWORD=app_secret pg1 \
+  psql "host=pgbouncer port=6432 user=sys_app dbname=outbox" \
+  -Atc "SELECT cdc.outbox_slot_status()"
+
 # Продвинуть слот (get вместо peek потребляет и двигает LSN/xmin).
-# Нужен перед failover/switchover-экспериментами, пока нет CDC: непотребляемый
+# Нужен перед failover/switchover-экспериментами, пока CDC остановлен: непотребляемый
 # слот перестаёт синхронизироваться на стендбаях и не переживает promotion —
-# документированное поведение PG17, см. docs/deviations.md раздел 3
+# документированное поведение PG17, см. docs/deviations.md раздел 3.
+# При работающем CDC это делает сам сервис (advance после Kafka delivery)
 docker compose exec -e PGPASSWORD=postgres pg1 psql -h haproxy -U postgres -d outbox \
   -Atc "SELECT count(*) FROM pg_logical_slot_get_binary_changes('outbox_slot', NULL, NULL, 'proto_version','1','publication_names','outbox_publication')"
 
@@ -155,19 +226,24 @@ docker compose exec kafka1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server loc
 ## Структура
 
 ```
-docker-compose.yml              — вся инфраструктура + Writer
-streaming-polling-outbox.sln    — .NET-решение (Writer + тесты)
+docker-compose.yml              — вся инфраструктура + Writer + CDC Polling (profile polling)
+streaming-polling-outbox.sln    — .NET-решение (Writer, CdcCommon, CdcPolling + тесты)
 .env.example                    — шаблон переменных окружения (cp .env.example .env)
 AGENTS.md                       — инструкция для агентов (ограничения, грабли)
 src/Writer/                     — Writer: ASP.NET Core 8, net8.0 (Minimal API + генератор)
+src/CdcCommon/                  — общая библиотека CDC: LSN, парсер бинарного pgoutput, конверт, backoff
+src/CdcPolling/                 — CDC Polling: peek → pgoutput → Kafka (KafkaFlow) → advance
 tests/Writer.UnitTests/         — xunit-тесты критичной логики Writer
+tests/CdcPolling.UnitTests/     — xunit-тесты: golden-байты pgoutput, LSN, конверт, backoff, опции
 infrastructure/
   patroni/                      — Dockerfile (postgres:17.2 + patroni 4.1.5) и patroni.yml
-  postgres/init/                — идемпотентный SQL-bootstrap (роли, outbox-таблица, publication, слот)
+  postgres/init/                — идемпотентный SQL-bootstrap (роли, outbox-таблица, publication,
+                                   слот, SECURITY DEFINER-функции CDC Polling)
   haproxy/ pgbouncer/ prometheus/
 scripts/
   check-infra.sh                — полная проверка стенда (exit 0 = всё зелёное)
   test/smoke-writer.sh          — живая проверка Writer (прогон/БД/метрики/direct/рестарт)
+  test/smoke-cdc-polling.sh     — живая проверка CDC Polling (доставка/LSN/метрики/рестарт/batch size)
   init/apply-bootstrap.sh       — повторный запуск инициализации БД
   reset/wipe.sh                 — полный сброс (down -v)
 docs/
@@ -176,7 +252,7 @@ docs/
 
 ## Что дальше (по плану requirements.md)
 
-Этапы 4+: CDC Polling (`sys_app` + SECURITY DEFINER + разбор бинарного pgoutput + KafkaFlow),
-CDC Streaming (`sys_replication`, Npgsql PgOutput), метрики CDC, HA-тесты TEST-HA-001..008,
-benchmark и сравнительный отчёт. Отложено владельцем на поздний этап: Schema Registry + Avro-тело
-сообщения (сейчас body — JSON `jsonb`).
+Этап 5: CDC Streaming (`sys_replication`, Npgsql PgOutput; профиль `streaming`, общий
+парсер из `src/CdcCommon`). Далее: метрики CDC-инфраструктуры, HA-тесты TEST-HA-001..008,
+benchmark-циклы A/B (полный wipe между ними, requirements.md 11) и сравнительный отчёт.
+Отложено владельцем на поздний этап: Schema Registry + Avro-тело сообщения (сейчас body — JSON `jsonb`).

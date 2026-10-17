@@ -187,7 +187,50 @@ LSN совпадают, catalog_xmin стендбая (773) обогнал сл�
   «For replication slot synchronization it is also necessary to specify a
   valid dbname in the primary_conninfo string»).
 
-## 4. Прочее (некритическое)
+## 4. Привилегии PG17 на SQL-функции слота: почему SECURITY DEFINER обязателен
+
+requirements.md 5.2: «Исследуй реальные требования PostgreSQL 17 к выполнению
+функций работы с logical slots… Если функция требует более высоких привилегий,
+создай безопасный минимальный privileged wrapper и задокументируй причину».
+
+**Результат проверки на стенде (PostgreSQL 17.2).** Прямой вызов
+`pg_logical_slot_peek_binary_changes()` от роли `sys_app` (NOSUPERUSER,
+NOREPLICATION) завершается ошибкой:
+
+```
+ERROR:  permission denied to use replication slots
+DETAIL:  Only roles with the REPLICATION attribute may use replication slots.
+```
+
+То есть SQL-интерфейс логического декодирования требует атрибут REPLICATION
+(или SUPERUSER), которого у `sys_app` по требованиям 5.1 быть не должно —
+повышать привилегии роли нельзя. Минимальное решение — SECURITY DEFINER-функции
+владельца `postgres` (`infrastructure/postgres/init/04-cdc-polling.sql`):
+
+- `cdc.peek_outbox_changes(p_limit)` — peek без потребления; слот
+  `outbox_slot`, publication `outbox_publication`, `proto_version=1` —
+  константы в теле; лимит зажат 1..10000 («ограничение размера пачки» 5.2);
+  параллельно обновляет watermark `cdc.peek_state` в той же транзакции
+  (watermark закоммичен ⟺ клиент получил строки);
+- `cdc.advance_outbox_slot(p_target)` — `pg_replication_slot_advance` до
+  позиции, не дальше watermark («запрет произвольного продвижения LSN» /
+  «проверка корректности подтверждаемой позиции» — максимум достижимого на
+  стороне БД: о доставке в Kafka база знать не может, что requirements.md 5.2
+  прямо оговаривает);
+- `cdc.outbox_slot_status()` — состояние слота + текущий WAL LSN для метрик
+  WAL lag и диагностики инвалидации.
+
+EXECUTE — только у `sys_app` (PUBLIC отозван), `search_path = pg_catalog`,
+все вызовы schema-qualified. Положительные проверки под минимальной ролью
+(requirements.md 5.3) — в `scripts/check-infra.sh` и
+`scripts/test/smoke-cdc-polling.sh`.
+
+**Попутно зафиксированные отличия PG17 от PG18** (важно для портируемости):
+`pg_replication_slot_advance` в PG17 возвращает `(slot_name, end_lsn)` —
+столбец `end_xid` появился в PG18; в `pg_replication_slots` PG17 нет колонки
+`persisted` (PG18), есть `synced`.
+
+## 5. Прочее (некритическое)
 
 - **pg_hba максимально лоялен** (по решению владельца): ограничения источника не
   относятся к задаче; аутентификация scram сохранена. Минимальные привилегии
@@ -196,3 +239,15 @@ LSN совпадают, catalog_xmin стендбая (773) обогнал сл�
   (dynamic config): параметры из `CMDLINE_OPTIONS` Patroni применяются ко всем
   нодам только через DCS, member-local `postgresql.parameters` для них
   игнорируются.
+- **LSN для advance = строчный LSN Commit-записи peek** (это `end_lsn`
+  commit-сообщения — позиция сразу после commit-записи в WAL): сверено на
+  стенде — `pg_replication_slot_advance` устанавливает `confirmed_flush_lsn`
+  ровно в переданное значение, повторный peek после advance пуст (ни дублей,
+  ни пропусков). Продвижение до commit_lsn (без «end») также безопасно, но
+  тогда confirmed_flush отстаёт от фактически обработанной транзакции.
+- **Env-префикс конфигурации .NET-сервиса CDC — `CDCPOLLING__`** (без
+  подчёркивания между CDC и POLLING): провайдер EnvironmentVariables
+  превращает в разделитель только двойные подчёркивания; `CDC_POLLING__X`
+  дал бы секцию `CDC_POLLING`, которая не биндится к `CdcPolling` — значения
+  молча терялись бы (обнаружено на пароле БД). У Writer (`WRITER__`)
+  подчёркиваний в имени нет, поэтому паттерн совпадает.

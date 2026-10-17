@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>CdcCommon</RootNamespace>
+    <AssemblyName>CdcCommon</AssemblyName>
+  </PropertyGroup>
+
+  <!-- Чистая BCL-библиотека без внешних пакетов: разбор бинарного протокола
+       pgoutput (proto_version=1), LSN, конверт сообщения, backoff.
+       Используется обоими CDC-сервисами (этапы 4-5): стриминг парсит те же
+       записи, отличается только транспорт доставки (CopyData вместо SQL-строк). -->
+
+</Project>

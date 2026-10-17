@@ -72,6 +72,10 @@ state=$(get_state)
 [[ "$state" == "idle" ]] && ok "state=idle после старта" || bad "ожидался idle, получен '$state'"
 
 section "Прогон через PgBouncer: 500 сообщений × 256B (batch 50, parallelism 4; таблица остаётся пустой)"
+# Если запущен cdc-polling — он непрерывно потребляет слот, и peek отсюда либо
+# получает 55006 (слот занят), либо увидит 0 (CDC успел забрать); рост peek-счётчика
+# в таком случае не проверяется (доставка проверяется smoke-cdc-polling.sh).
+cdc_running=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c 'cdc-polling' || true)
 peek_count() {
   psql_primary -Atc "SELECT count(*) FROM pg_logical_slot_peek_binary_changes('outbox_slot', NULL, NULL, 'proto_version','1','publication_names','outbox_publication')" 2>/dev/null
 }
@@ -96,11 +100,15 @@ db_rows=$(psql_primary -Atc "SELECT count(*) FROM public.outbox_messages WHERE b
 [[ "$db_rows" == "0" ]] && ok "0 строк с runId прогона в таблице (INSERT+DELETE в одной транзакции)" || bad "в таблице $db_rows строк прогона (ожидалось 0)"
 total_rows=$(psql_primary -Atc "SELECT count(*) FROM public.outbox_messages")
 [[ "$total_rows" == "0" ]] && ok "outbox_messages пуста целиком" || bad "в таблице $total_rows строк (ожидалось 0)"
-peek_after=$(peek_count); peek_after=${peek_after:-0}
-if [[ "$peek_after" -gt "$peek_before" ]]; then
-  ok "изменения прогона в WAL/слоте (peek: $peek_before → $peek_after) при пустой таблице"
+if [[ "$cdc_running" != "0" ]]; then
+  ok "cdc-polling запущен — peek-счётчик слота не проверяется (слот потребляет CDC непрерывно)"
 else
-  bad "peek не вырос ($peek_before → $peek_after) — изменения не попали в слот"
+  peek_after=$(peek_count); peek_after=${peek_after:-0}
+  if [[ "$peek_after" -gt "$peek_before" ]]; then
+    ok "изменения прогона в WAL/слоте (peek: $peek_before → $peek_after) при пустой таблице"
+  else
+    bad "peek не вырос ($peek_before → $peek_after) — изменения не попали в слот"
+  fi
 fi
 
 code=$(api GET /api/generation/results/ids)
