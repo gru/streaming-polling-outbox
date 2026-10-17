@@ -246,6 +246,11 @@ public sealed class CdcPollingEngine : BackgroundService
                     {
                         foreach (var chunk in batch.Events.Chunk(kafkaBatch))
                         {
+                            // ProduceAsync синхронно ставит сообщение в буфер продюсера и возвращает
+                            // Task на delivery-репорт: запускаем весь чанк до первого await, чтобы
+                            // ack'и конвейеризировались (последовательное await платило бы RTT за
+                            // каждое сообщение) и librdkafka собирал per-partition батчи. Порядок в
+                            // партиции сохраняется: key=id + идемпотентный продюсер.
                             var tasks = new Task[chunk.Length];
                             for (var i = 0; i < chunk.Length; i++)
                                 tasks[i] = PublishOneAsync(chunk[i]);
