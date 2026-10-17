@@ -5,9 +5,8 @@
 --
 -- Выполняется от имени postgres на primary (через HAProxy).
 
--- sys_writer: только запись logical messages.
--- pg_logical_emit_message() выполняется без специальных привилегий (public),
--- ролям репликации быть не нужно.
+-- sys_writer: только запись в outbox-таблицу (INSERT, см. 01-db-publication.sql);
+-- прав репликации и объектов схемы не нужно.
 SELECT format('CREATE ROLE sys_writer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT PASSWORD %L',
               :'sys_writer_password')
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'sys_writer') \gexec

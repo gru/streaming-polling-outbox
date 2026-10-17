@@ -1,18 +1,14 @@
 -- Logical replication slot с failover=true (requirements.md раздел 4.4).
 -- Создаётся явно после готовности кластера, идемпотентно.
 --
--- ОТКЛОНЕНИЕ ОТ ТЗ (см. docs/deviations.md): плагин слота — test_decoding,
--- а не pgoutput. Причина: pgoutput не передаёт logical messages ни в одной
--- версии PostgreSQL (проверено эмпирически на 17.2 и 18.4, подтверждено
--- release notes PG18), т.е. связка «pgoutput + pg_logical_emit_message»
--- неработоспособна. test_decoding входит в официальный образ postgres,
--- сохраняет архитектуру ТЗ: transactional messages без outbox-таблицы,
--- слот + peek/advance против стриминга.
+-- Плагин — pgoutput: CDC читает изменения outbox-таблицы (см. 01-db-publication.sql
+-- и docs/deviations.md раздел 1). Publication указывается в опциях чтения
+-- (peek / START_REPLICATION), а не при создании слота.
 -- failover=true включает нативную синхронизацию слота на standby силами
 -- PostgreSQL 17 (sync_replication_slots + hot_standby_feedback включены
 -- в patroni.yml). Patroni permanent slots не используются (requirements.md).
 
-SELECT format('SELECT pg_create_logical_replication_slot(slot_name => %L, plugin => %L, failover => true)', 'outbox_slot', 'test_decoding')
+SELECT format('SELECT pg_create_logical_replication_slot(slot_name => %L, plugin => %L, failover => true)', 'outbox_slot', 'pgoutput')
 WHERE NOT EXISTS (SELECT FROM pg_replication_slots WHERE slot_name = 'outbox_slot') \gexec
 
 -- synchronized_standby_slots на primary принимает ТОЛЬКО физические слоты

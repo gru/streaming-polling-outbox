@@ -4,42 +4,55 @@
 правилу requirements.md раздел 2: «Выбери технически корректную реализацию,
 сохранив исходную цель исследования. Документируй все отклонения».
 
-## 1. Плагин слота — test_decoding вместо pgoutput (критическое)
+## 1. Механика CDC: outbox-таблица + pgoutput (вместо pg_logical_emit_message)
 
-**Пункт ТЗ:** «Используй только `pgoutput` в обоих CDC-режимах» (раздел 2),
-структура раздела 7.1 предполагает разбор logical messages из бинарного pgoutput.
+**Пункты ТЗ:** «Не создавай outbox-таблицу» (раздел 2), «Сообщения создаются
+через pg_logical_emit_message()» (4.1), «пустая publication… не должна включать
+таблицы» (4.3).
 
-**Факт:** pgoutput **не передаёт logical messages ни в одной версии PostgreSQL**.
+**История и причины перехода (зафиксировано по требованию владельца):**
 
-- Проверено эмпирически на PostgreSQL 17.2 и 18.4: транзакция, содержащая только
-  `pg_logical_emit_message(true, 'outbox', ...)`, не видна ни через
-  `pg_logical_slot_peek_binary_changes(..., 'proto_version','1',
-  'publication_names',...)` (pgoutput), ни через стриминг — при непустой
-  publication и принудительном XID тоже. Сообщения от `pg_logical_emit_message`
-  pgoutput не эмитит вовсе (записи BEGIN/Relation/INSERT/COMMIT от табличных
-  изменений при этом приходят).
-- Подтверждено релиз-нотами: в [release notes PostgreSQL 18](https://www.postgresql.org/docs/18/release-18.html)
-  поддержка logical messages в pgoutput отсутствует; патч из дискуссии
-  [pgsql-hackers](https://www.postgresql.org/message-id/CALj2ACXLkU4y%2Bmmk2gHzmvSV4KTishSe%3DHhZ_yn%3DNHFBDGrwFQ%40mail.gmail.com)
-  не принят. Тип 'M' в [документации протокола](https://www.postgresql.org/docs/current/protocol-logical-replication.html)
-  зарезервирован для сторонних output-плагинов.
-- Т.е. связка «pgoutput + pg_logical_emit_message» (ядро обоих CDC-режимов ТЗ)
-  неработоспособна. См. также RISK-001.
+1. Исходный замысел ТЗ: transactional messages через `pg_logical_emit_message`
+   + pgoutput, без физической таблицы.
+2. **Практически доказано (PostgreSQL 17.2 и 18.4): pgoutput не передаёт
+   logical messages ни в одной версии PostgreSQL.** Транзакция, содержащая
+   только `pg_logical_emit_message`, невидима ни для
+   `pg_logical_slot_peek_binary_changes(..., 'publication_names', ...)`,
+   ни для стриминга — при непустой publication и принудительном XID тоже.
+   Подтверждено [release notes PostgreSQL 18](https://www.postgresql.org/docs/18/release-18.html):
+   поддержка logical messages в pgoutput там отсутствует; патч из дискуссии
+   [pgsql-hackers](https://www.postgresql.org/message-id/CALj2ACXLkU4y%2Bmmk2gHzmvSV4KTishSe%3DHhZ_yn%3DNHFBDGrwFQ%40mail.gmail.com)
+   не принят. Тип 'M' в [документации протокола](https://www.postgresql.org/docs/current/protocol-logical-replication.html)
+   зарезервирован для сторонних output-плагинов. Связка из ТЗ неработоспособна.
+3. Первое обходное решение (2026-10-16): слот на плагине `test_decoding` —
+   сохраняло механику «сообщения без таблицы», проверено сквозным smoke.
+4. **Финальное решение (владелец, 2026-10-17): переход на классический
+   outbox-паттерн. Причина: test_decoding — не production-история**
+   (демо-плагин, текстовый формат, нет экосистемы/поддержки), тогда как
+   outbox-таблица + pgoutput — стандартный industrial-паттерн CDC.
 
-**Решение (согласовано с владельцем проекта):** слот `outbox_slot` создаётся с
-плагином **`test_decoding`** (входит в официальный образ postgres, внешних
-зависимостей нет). Сохранена архитектура ТЗ: transactional messages через
-`pg_logical_emit_message`, БЕЗ outbox-таблицы, режимы «слот + peek/advance»
-против «стриминг». Отключено требование «только pgoutput».
+**Что нарушено из исходного ТЗ:** запрет outbox-таблицы; publication содержит
+таблицу (не пустая).
 
-**Следствия для следующих этапов:**
-- CDC Polling разбирает текстовые записи `pg_logical_slot_peek_changes()`:
-  `BEGIN <xid>`, `message: transactional: 1 prefix: outbox, sz: N content:...`,
-  `COMMIT <xid>`.
-- CDC Streaming использует generic Npgsql Logical Replication API
-  (не `PgOutputReplicationSlot`).
-- Пустая publication `outbox_publication` сохранена (раздел 4.3), но не
-  участвует в декодировании.
+**Что сохранено (цель исследования не изменилась):** доставка — по-прежнему
+logical replication через слот (peek + advance против Npgsql-стриминга —
+предмет сравнения benchmark'а); SELECT-polling таблицы запрещён; at-least-once
+с подтверждением LSN только после Kafka delivery.
+
+**Детали реализации:**
+
+- `public.outbox_messages(id uuid PK, topic text CHECK (topic='outbox.events'),
+  body jsonb, created_at timestamptz)` — строка соответствует формату сообщения
+  requirements.md 4.2 (id/topic/body/timestamp). Таблица минимальна: PK без
+  дополнительных индексов — лишние индексы увеличивают WAL на INSERT и искказят
+  замеры. CHECK на topic реализует запрет произвольной маршрутизации.
+- publication `outbox_publication` содержит `outbox_messages`: pgoutput эмитит
+  только изменения опубликованных таблиц.
+- `sys_writer`: USAGE на схему + INSERT на таблицу (минимум для записи).
+- Слот `outbox_slot`: плагин `pgoutput`, `failover=true`.
+- Жизненный цикл строк (очистка после публикации) — будет решён при реализации
+  CDC (этап 4); в рамках тестовых циклов строки накапливаются, между циклами —
+  полный wipe стенда.
 
 ## 2. Прикладная БД — `postgres` вместо отдельной `outbox`
 
@@ -52,9 +65,9 @@
 dbname, не переведя сам Patroni на другую БД (`postgresql.database`) — что
 ломает первый bootstrap (БД ещё не существует).
 
-**Решение:** единственная прикладная БД стенда — `postgres`. Publication, слот
-и сообщения живут в ней; синхронизация слота на standby проверена (synced=true).
-Требование «одна прикладная база данных» выполняется буквально.
+**Решение:** единственная прикладная БД стенда — `postgres`. Outbox-таблица,
+publication и слот живут в ней; синхронизация слота на standby проверена
+(synced=true). Требование «одна прикладная база данных» выполняется буквально.
 
 ## 3. Прочее (некритическое)
 

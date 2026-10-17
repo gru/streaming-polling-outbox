@@ -92,17 +92,17 @@ section "PostgreSQL: прикладная БД (postgres), publication, replicat
 # БД из primary_conninfo (см. infrastructure/postgres/init/01-db-publication.sql).
 pub=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d postgres -Atc "SELECT count(*) FROM pg_publication WHERE pubname='outbox_publication'")
 [[ "$pub" == "1" ]] && ok "publication outbox_publication существует" || bad "publication не найдена"
-pub_tables=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d postgres -Atc "SELECT count(*) FROM pg_publication_tables WHERE pubname='outbox_publication'")
-[[ "$pub_tables" == "0" ]] && ok "publication пустая (0 таблиц)" || bad "publication содержит $pub_tables таблиц"
+pub_tables=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d postgres -Atc "SELECT count(*) FROM pg_publication_tables WHERE pubname='outbox_publication' AND schemaname='public' AND tablename='outbox_messages'")
+[[ "$pub_tables" == "1" ]] && ok "publication содержит outbox_messages (pgoutput эмитит только опубликованные таблицы)" || bad "publication не содержит outbox_messages: '$pub_tables'"
 # Протокол логической репликации от sys_replication напрямую через HAProxy (минуя PgBouncer)
 identify=$($DC exec -T -e PGPASSWORD="$SYS_REPLICATION_PASSWORD" pg1 \
   psql "host=haproxy dbname=postgres user=sys_replication replication=database" -Atc "IDENTIFY_SYSTEM" 2>&1)
 [[ "$identify" == *"systemid"* || -n "$identify" ]] && ok "sys_replication: replication protocol доступен (IDENTIFY_SYSTEM)" || bad "replication protocol: $identify"
 
-section "PostgreSQL: failover logical slot (test_decoding)"
+section "PostgreSQL: failover logical slot (pgoutput)"
 slot=$(psql_primary -Atc "SELECT plugin || '|' || failover || '|' || wal_status FROM pg_replication_slots WHERE slot_name='outbox_slot'")
 echo "  primary slot: $slot"
-[[ "$slot" == "test_decoding|true|"* || "$slot" == "test_decoding|t|"* ]] && ok "слот outbox_slot: test_decoding, failover=true" || bad "слот outbox_slot: '$slot'"
+[[ "$slot" == "pgoutput|true|"* || "$slot" == "pgoutput|t|"* ]] && ok "слот outbox_slot: pgoutput, failover=true" || bad "слот outbox_slot: '$slot'"
 # wal_status: reserved/extended — WAL слота удерживается; lost/invalid — проблема
 [[ "$slot" == *"reserved" ]] && ok "wal_status удерживает WAL (reserved)" || bad "wal_status не reserved: '$slot'"
 # synced=true хотя бы на одной реплике (ждём до 90 сек — слоты синхронизируются асинхронно)
@@ -125,17 +125,25 @@ wal_level=$(psql_primary -Atc "SHOW wal_level")
 sync_rep=$(psql_primary -Atc "SELECT count(*) FROM pg_stat_replication WHERE sync_state IN ('sync','quorum')")
 [[ "$sync_rep" -ge 1 ]] && ok "синхронный standby есть (pg_stat_replication)" || bad "нет sync standby в pg_stat_replication"
 
-section "Сквозной smoke: pg_logical_emit_message -> peek (test_decoding)"
-smoke_payload="infra-check-$(date +%s)"
-lsn=$($DC exec -T -e PGPASSWORD="$SYS_WRITER_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_writer -d postgres -Atc "SELECT pg_logical_emit_message(true, 'outbox', '$smoke_payload')" 2>&1)
-[[ "$lsn" == */* ]] && ok "sys_writer записал logical message (LSN $lsn) через PgBouncer" || bad "emit через PgBouncer: $lsn"
-peeked=""
+section "Сквозной smoke: INSERT в outbox -> peek (pgoutput, binary)"
+peek_count() {
+  psql_primary -Atc "SELECT count(*) FROM pg_logical_slot_peek_binary_changes('outbox_slot', NULL, NULL, 'proto_version','1','publication_names','outbox_publication')" 2>/dev/null
+}
+before=$(peek_count); before=${before:-0}
+inserted=$($DC exec -T -e PGPASSWORD="$SYS_WRITER_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_writer -d postgres -Atc "INSERT INTO public.outbox_messages (id, topic, body) VALUES (gen_random_uuid(), 'outbox.events', '{\"smoke\":\"infra-check\"}')" 2>&1)
+# RETURNING не используется: он требует SELECT-привилегию, а у sys_writer только INSERT
+# (минимум по requirements.md 5); Writer будет передавать свой UUID явно.
+[[ "$inserted" == *"INSERT 0 1"* ]] && ok "sys_writer вставил строку в outbox_messages через PgBouncer" || bad "INSERT через PgBouncer: $inserted"
+after=""
 for _ in $(seq 1 15); do
-  peeked=$(psql_primary -Atc "SELECT count(*) FROM pg_logical_slot_peek_changes('outbox_slot', NULL, NULL) WHERE data LIKE '%prefix: outbox%' AND data LIKE '%$smoke_payload%'" 2>/dev/null)
-  [[ "$peeked" -ge 1 ]] && break
+  after=$(peek_count)
+  delta=$(( ${after:-0} - before ))
+  [[ "$delta" -ge 3 ]] && break
   sleep 2
 done
-[[ "$peeked" -ge 1 ]] && ok "peek (test_decoding) видит сообщение с payload" || bad "peek не видит сообщение (count=$peeked)"
+# Одна вставленная строка = минимум 3 записи pgoutput (Relation + Insert внутри транзакции);
+# B/C-обрамление может объединяться с соседними транзакциями — поэтому порог 3, а не 4.
+if [[ "$delta" -ge 3 ]]; then ok "peek (pgoutput, binary) видит изменения: было $before, стало $after (Δ$delta)"; else bad "peek не видит изменения (before=$before after=$after)"; fi
 
 section "Kafka: topic"
 topic_desc=$($DC exec -T kafka1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic outbox.events 2>&1)
