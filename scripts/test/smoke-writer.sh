@@ -56,7 +56,11 @@ wait_finished() { # ждём state вне running|stopping; выводит фи�
 }
 
 section "Writer: сборка и запуск"
-$DC up -d --build writer >/dev/null 2>&1 && ok "docker compose up -d --build writer" || bad "не удалось собрать/запустить writer"
+# ВАЖНО: build только writer и up с --no-deps — иначе compose реконсилярует весь
+# граф зависимостей (haproxy -> pg1-3) и ПЕРЕСОЗДАЁТ pg-контейнеры, одновременно
+# роняя Patroni-кластер (флап промоушенов, рассинхрон failover-слотов).
+$DC build writer >/dev/null 2>&1 && $DC up -d --no-deps writer >/dev/null 2>&1 \
+  && ok "docker compose build writer && up -d --no-deps writer" || bad "не удалось собрать/запустить writer"
 if wait_healthy; then ok "writer healthy (/health)"; else bad "writer не стал healthy за 90s"; fi
 # перезагрузить конфиг Prometheus, чтобы подхватился job writer
 $DC exec -T prometheus kill -HUP 1 >/dev/null 2>&1 || $DC restart prometheus >/dev/null 2>&1
@@ -66,7 +70,11 @@ section "Старт в Idle (requirements.md 6.1)"
 state=$(get_state)
 [[ "$state" == "idle" ]] && ok "state=idle после старта" || bad "ожидался idle, получен '$state'"
 
-section "Прогон через PgBouncer: 500 сообщений × 256B (batch 50, parallelism 4)"
+section "Прогон через PgBouncer: 500 сообщений × 256B (batch 50, parallelism 4; таблица остаётся пустой)"
+peek_count() {
+  psql_primary -Atc "SELECT count(*) FROM pg_logical_slot_peek_binary_changes('outbox_slot', NULL, NULL, 'proto_version','1','publication_names','outbox_publication')" 2>/dev/null
+}
+peek_before=$(peek_count); peek_before=${peek_before:-0}
 code=$(api POST /api/generation/start '{"totalMessages":500,"messageSizeBytes":256,"batchSize":50,"parallelism":4}')
 [[ "$code" == "202" ]] && ok "POST /start → 202 (runId=$(jfield 'd["runId"]')" || bad "POST /start → $code: $(cat /tmp/smoke-writer-resp.json)"
 run_id=$(jfield 'd["runId"]')
@@ -81,8 +89,18 @@ echo "  итоги: written=$written rate=${rate}msg/s commitP95=${cp95}ms ambig
   && ok "written=500, ambiguous=0, failed=0, stopReason=TargetMessages" \
   || bad "written=$written ambiguous=$ambiguous failed=$failed reason=$reason"
 
-db_count=$(psql_primary -Atc "SELECT count(*) FROM public.outbox_messages WHERE body->>'runId' = '$run_id'")
-[[ "$db_count" == "500" ]] && ok "в БД ровно 500 строк с runId прогона" || bad "в БД $db_count строк (ожидалось 500)"
+# Writer держит outbox пустым: INSERT+DELETE в одной транзакции — строки не остаются,
+# но изменения попадают в WAL и видны в слоте (сообщение живёт в WAL, не в таблице)
+db_rows=$(psql_primary -Atc "SELECT count(*) FROM public.outbox_messages WHERE body->>'runId' = '$run_id'")
+[[ "$db_rows" == "0" ]] && ok "0 строк с runId прогона в таблице (INSERT+DELETE в одной транзакции)" || bad "в таблице $db_rows строк прогона (ожидалось 0)"
+total_rows=$(psql_primary -Atc "SELECT count(*) FROM public.outbox_messages")
+[[ "$total_rows" == "0" ]] && ok "outbox_messages пуста целиком" || bad "в таблице $total_rows строк (ожидалось 0)"
+peek_after=$(peek_count); peek_after=${peek_after:-0}
+if [[ "$peek_after" -gt "$peek_before" ]]; then
+  ok "изменения прогона в WAL/слоте (peek: $peek_before → $peek_after) при пустой таблице"
+else
+  bad "peek не вырос ($peek_before → $peek_after) — изменения не попали в слот"
+fi
 
 code=$(api GET /api/generation/results/ids)
 ids_count=$(jfield 'len(d["writtenIds"])')
@@ -136,8 +154,8 @@ final_state=$(wait_finished)
 api GET /api/generation/results >/dev/null
 direct_written=$(jfield 'd["writtenMessages"]'); direct_mode=$(jfield 'd["connectionMode"]')
 [[ "$direct_written" == "50" && "$direct_mode" == "direct" ]] && ok "direct: written=50, connectionMode=direct" || bad "direct: written=$direct_written mode=$direct_mode"
-db_count=$(psql_primary -Atc "SELECT count(*) FROM public.outbox_messages WHERE body->>'runId' = '$direct_run_id'")
-[[ "$db_count" == "50" ]] && ok "в БД ровно 50 строк direct-прогона" || bad "в БД $db_count строк (ожидалось 50)"
+db_rows=$(psql_primary -Atc "SELECT count(*) FROM public.outbox_messages WHERE body->>'runId' = '$direct_run_id'")
+[[ "$db_rows" == "0" ]] && ok "direct: 0 строк в таблице (пустая)" || bad "direct: в таблице $db_rows строк (ожидалось 0)"
 
 printf '\n\033[1mИТОГ: PASS=%d FAIL=%d\033[0m\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

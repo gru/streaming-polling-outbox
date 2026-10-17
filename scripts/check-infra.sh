@@ -125,15 +125,26 @@ wal_level=$(psql_primary -Atc "SHOW wal_level")
 sync_rep=$(psql_primary -Atc "SELECT count(*) FROM pg_stat_replication WHERE sync_state IN ('sync','quorum')")
 [[ "$sync_rep" -ge 1 ]] && ok "синхронный standby есть (pg_stat_replication)" || bad "нет sync standby в pg_stat_replication"
 
-section "Сквозной smoke: INSERT в outbox -> peek (pgoutput, binary)"
+section "Сквозной smoke: INSERT+DELETE в одной транзакции -> peek (pgoutput, binary)"
+# Writer держит outbox пустым (решение владельца): строка существует только внутри
+# транзакции, сообщение живёт в WAL. Здесь проверяем, что такие изменения
+# logical decoding по-прежнему эмитит.
 peek_count() {
   psql_primary -Atc "SELECT count(*) FROM pg_logical_slot_peek_binary_changes('outbox_slot', NULL, NULL, 'proto_version','1','publication_names','outbox_publication')" 2>/dev/null
 }
 before=$(peek_count); before=${before:-0}
-inserted=$($DC exec -T -e PGPASSWORD="$SYS_WRITER_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_writer -d postgres -Atc "INSERT INTO public.outbox_messages (id, topic, body) VALUES (gen_random_uuid(), 'outbox.events', '{\"smoke\":\"infra-check\"}')" 2>&1)
-# RETURNING не используется: он требует SELECT-привилегию, а у sys_writer только INSERT
-# (минимум по requirements.md 5); Writer будет передавать свой UUID явно.
-[[ "$inserted" == *"INSERT 0 1"* ]] && ok "sys_writer вставил строку в outbox_messages через PgBouncer" || bad "INSERT через PgBouncer: $inserted"
+rows_before=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d postgres -Atc "SELECT count(*) FROM public.outbox_messages")
+# Фиксированный UUID: DELETE фильтрует по id — у sys_writer колоночный SELECT(id)
+# (WHERE в DELETE читает колонки условия; чтение body запрещено и не нужно).
+smoke_uuid="00000000-0000-7000-8000-000000000c0d"
+inserted=$($DC exec -T -e PGPASSWORD="$SYS_WRITER_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_writer -d postgres -Atc "
+BEGIN;
+INSERT INTO public.outbox_messages (id, topic, body) VALUES ('$smoke_uuid', 'outbox.events', '{\"smoke\":\"infra-check\"}');
+DELETE FROM public.outbox_messages WHERE id = '$smoke_uuid'::uuid;
+COMMIT;" 2>&1 | tr '\n' ' ')
+# RETURNING не используется: он требует SELECT-привилегию на возвращаемые колонки,
+# у sys_writer только INSERT+DELETE и колоночный SELECT(id) (минимум по requirements.md 5).
+[[ "$inserted" == *"INSERT 0 1"* && "$inserted" == *"DELETE 1"* ]] && ok "sys_writer: INSERT+DELETE в одной транзакции через PgBouncer" || bad "INSERT+DELETE через PgBouncer: $inserted"
 after=""
 for _ in $(seq 1 15); do
   after=$(peek_count)
@@ -141,9 +152,12 @@ for _ in $(seq 1 15); do
   [[ "$delta" -ge 3 ]] && break
   sleep 2
 done
-# Одна вставленная строка = минимум 3 записи pgoutput (Relation + Insert внутри транзакции);
-# B/C-обрамление может объединяться с соседними транзакциями — поэтому порог 3, а не 4.
+# Одна вставленная и тут же удалённая строка = минимум 3 записи pgoutput
+# (Relation + Insert + Delete внутри транзакции; B/C-обрамление может объединяться
+# с соседними транзакциями — поэтому порог 3, а не 5).
 if [[ "$delta" -ge 3 ]]; then ok "peek (pgoutput, binary) видит изменения: было $before, стало $after (Δ$delta)"; else bad "peek не видит изменения (before=$before after=$after)"; fi
+rows_after=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d postgres -Atc "SELECT count(*) FROM public.outbox_messages")
+[[ "$rows_after" == "$rows_before" ]] && ok "outbox_messages не выросла (строка удалена в той же транзакции)" || bad "таблица выросла: $rows_before → $rows_after"
 
 section "Kafka: topic"
 topic_desc=$($DC exec -T kafka1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic outbox.events 2>&1)

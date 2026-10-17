@@ -25,13 +25,14 @@ slot (SELECT-polling таблицы не используется). Причин
   (минимальные привилегии), БД, publication, слот
 
 **Writer (этап 3, готов)** — ASP.NET Core 8 (`net8.0`), управляемый генератор нагрузки:
-транзакционные INSERT-батчи в `public.outbox_messages` от `sys_writer`; по умолчанию через
-PgBouncer, диагностический режим `direct` (через HAProxy, мимо PgBouncer) — без изменения
-кода (env `WRITER_CONNECTION_MODE` или поле `connectionMode` в запросе старта). От Kafka не
-зависит. Метрики OpenTelemetry → `/metrics`. UUID (`Guid` v7) и `created_at` задаёт клиент —
-у `sys_writer` нет SELECT-привилегии, поэтому `INSERT ... RETURNING` недоступен; повтор батча
-с теми же UUID после сбоя соединения делает неоднозначный commit разрешимым (unique violation
-по PK = прошлый commit прошёл).
+батчи «INSERT + DELETE тех же строк» в одной транзакции от `sys_writer` — **outbox-таблица
+всегда пустая**, сообщение живёт только в WAL (logical decoding эмитит изменения удалённых
+в той же транзакции строк — проверено). По умолчанию подключение через PgBouncer,
+диагностический режим `direct` (через HAProxy, мимо PgBouncer) — без изменения кода
+(env `WRITER_CONNECTION_MODE` или поле `connectionMode` в запросе старта). От Kafka не
+зависит. Метрики OpenTelemetry → `/metrics`. UUID (`Guid` v7) и `created_at` задаёт клиент;
+повтор батча с теми же UUID после сбоя соединения делает неоднозначный commit разрешимым
+(unique violation по PK = прошлый commit прошёл).
 
 ## Быстрый старт
 
@@ -41,6 +42,12 @@ docker compose up -d --build    # сборка Patroni/Writer-образов + �
 ./scripts/check-infra.sh        # полная проверка инфраструктуры (все проверки должны быть ✔)
 ./scripts/test/smoke-writer.sh  # живая проверка Writer (прогон, БД, метрики, direct, рестарт)
 ```
+
+⚠️ `docker compose up -d --build` — команда **холодного старта**. На живом стенде её
+повторный запуск (равно как `docker compose run init-db` без `--no-deps`) может пересоздать
+pg-контейнеры и уронить Patroni-кластер; пересборка/перезапуск отдельного сервиса:
+`docker compose build <svc> && docker compose up -d --no-deps <svc>`, полный рестарт —
+`./scripts/reset/wipe.sh`.
 
 Хост-порты: HAProxy (primary) — **5432**, PgBouncer — 6432, Writer HTTP API — **18080**,
 Patroni REST — 8008/8009/8010, Kafka — 9092-9094, Prometheus — 9090, HAProxy stats — 8404.
@@ -104,10 +111,14 @@ curl -s localhost:8008/cluster | python3 -m json.tool
 docker compose exec -e PGPASSWORD=writer_secret pg1 \
   psql "host=pgbouncer port=6432 user=sys_writer dbname=postgres"
 
-# Записать сообщение в outbox руками (sys_writer; без RETURNING — требует SELECT-привилегию;
-# Writer генерирует UUID на клиенте и передаёт явно)
-docker compose exec -e PGPASSWORD=writer_secret pg1 psql "host=pgbouncer port=6432 user=sys_writer dbname=postgres" \
-  -c "INSERT INTO public.outbox_messages (id, topic, body) VALUES (gen_random_uuid(), 'outbox.events', '{\"eventType\":\"TestEvent\"}')"
+# Записать сообщение в outbox руками тем же паттерном, что Writer
+# (INSERT+DELETE в одной транзакции: таблица остаётся пустой, изменение уходит в WAL;
+# без RETURNING — оно требует SELECT-привилегию, у sys_writer только колоночный SELECT(id))
+docker compose exec -e PGPASSWORD=writer_secret pg1 psql "host=pgbouncer port=6432 user=sys_writer dbname=postgres" -c "
+BEGIN;
+INSERT INTO public.outbox_messages (id, topic, body) VALUES ('00000000-0000-7000-8000-000000000c0d', 'outbox.events', '{\"eventType\":\"TestEvent\"}');
+DELETE FROM public.outbox_messages WHERE id = '00000000-0000-7000-8000-000000000c0d';
+COMMIT;"
 
 # Посмотреть содержимое слота, не потребляя (бинарный pgoutput: B/R/I/C записи)
 docker compose exec -e PGPASSWORD=postgres pg1 psql -h localhost -U postgres -d postgres \

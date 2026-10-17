@@ -77,7 +77,10 @@ public sealed class OutboxWriter : IAsyncDisposable
     }
 
     /// <summary>
-    /// Записывает батч одной транзакцией: один multi-row INSERT → commit.
+    /// Записывает батч одной транзакцией: multi-row INSERT → DELETE тех же строк → commit.
+    /// Таблица остаётся ПУСТОЙ (решение владельца): строка живёт только внутри транзакции,
+    /// сообщение доставляется через WAL — logical decoding эмитит и Insert, и Delete,
+    /// CDC читает изменения через слот и игнорирует Delete-записи.
     /// Транзиентные сбои (failover/switchover, обрывы соединения) ретраятся теми же UUID
     /// с exponential backoff + jitter. Unique violation на ретрае означает, что прошлая
     /// попытка закоммитилась — это и есть разрешение неоднозначного commit (requirements.md 6.3):
@@ -90,6 +93,8 @@ public sealed class OutboxWriter : IAsyncDisposable
     {
         var source = SourceFor(mode);
         var sql = SqlCache.GetOrAdd(batch.Length, BuildInsertSql);
+        var ids = new Guid[batch.Length];
+        for (var i = 0; i < batch.Length; i++) ids[i] = batch[i].Id;
         var attempts = 0;
         string? lastTransient = null;
         var totalSw = System.Diagnostics.Stopwatch.StartNew();
@@ -101,9 +106,24 @@ public sealed class OutboxWriter : IAsyncDisposable
             {
                 await using var conn = await source.OpenConnectionAsync(hardCt);
                 await using var tx = await conn.BeginTransactionAsync(hardCt);
-                await using var cmd = new NpgsqlCommand(sql, conn, tx);
-                AddParameters(cmd, batch);
-                await cmd.ExecuteNonQueryAsync(hardCt);
+
+                await using (var insert = new NpgsqlCommand(sql, conn, tx))
+                {
+                    AddParameters(insert, batch);
+                    await insert.ExecuteNonQueryAsync(hardCt);
+                }
+
+                // удаляем те же строки в этой же транзакции: таблица не растёт,
+                // DELETE по PK только что вставленных идентификаторов дёшев
+                await using (var delete = new NpgsqlCommand(DeleteSql, conn, tx))
+                {
+                    delete.Parameters.Add(new NpgsqlParameter<Guid[]>
+                    {
+                        NpgsqlDbType = NpgsqlDbType.Uuid | NpgsqlDbType.Array,
+                        TypedValue = ids,
+                    });
+                    await delete.ExecuteNonQueryAsync(hardCt);
+                }
 
                 var commitSw = System.Diagnostics.Stopwatch.StartNew();
                 await tx.CommitAsync(hardCt);
@@ -142,6 +162,8 @@ public sealed class OutboxWriter : IAsyncDisposable
             }
         }
     }
+
+    private const string DeleteSql = "DELETE FROM public.outbox_messages WHERE id = ANY($1)";
 
     private static string BuildInsertSql(int rows)
     {

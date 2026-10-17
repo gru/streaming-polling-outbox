@@ -46,5 +46,15 @@ REVOKE ALL ON SCHEMA public FROM sys_writer, sys_app, sys_replication;
 GRANT USAGE ON SCHEMA public TO sys_writer;  -- INSERT в public.outbox_messages
 GRANT USAGE ON SCHEMA public TO sys_app;     -- будущие SECURITY DEFINER-функции polling
 
--- Минимум для Writer: только INSERT (id генерирует клиент; UPDATE/DELETE не нужны).
-GRANT INSERT ON public.outbox_messages TO sys_writer;
+-- Минимум для Writer: INSERT + DELETE (id генерирует клиент; UPDATE не нужен).
+-- Writer держит таблицу ПУСТОЙ (решение владельца): INSERT и DELETE выполняются
+-- в одной транзакции — строка существует только внутри транзакции, а сообщение
+-- живёт в WAL: logical decoding (pgoutput) эмитит оба изменения, CDC читает их
+-- через слот, таблица не растёт (проверено: peek видит B/R/I/D/C той же транзакции).
+GRANT INSERT, DELETE ON public.outbox_messages TO sys_writer;
+
+-- Колоночный SELECT(id): PostgreSQL требует SELECT на колонки, читаемые в WHERE
+-- команды DELETE (docs: "the SELECT privilege on any column whose values are read
+-- in the condition"). Наш DELETE-очистка фильтрует по id — достаточно SELECT
+-- только на эту колонку; SELECT всей таблицы (body и пр.) НЕ выдаётся.
+GRANT SELECT (id) ON public.outbox_messages TO sys_writer;
