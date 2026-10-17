@@ -299,3 +299,74 @@ end_lsn)` — выходной колонки `end_xid` не существуе�
   дал бы секцию `CDC_POLLING`, которая не биндится к `CdcPolling` — значения
   молча терялись бы (обнаружено на пароле БД). У Writer (`WRITER__`)
   подчёркиваний в имени нет, поэтому паттерн совпадает.
+
+## 6. Этап 5 (CDC Streaming): решения и факты Npgsql 8.0.9
+
+Идея из плана этапа 4 была «общий бинарный парсер CdcCommon для обоих CDC».
+Практика Npgsql 8.0.9 это скорректировала; все решения ниже проверены на стенде
+(прогон 500×256 → 500/500 уникальных id в Kafka, confirmed_flush == gauge,
+рестарт с продолжением, waiting_kafka → recovery).
+
+**(а) Типизированный pgoutput API вместо общего бинарного парсера.** В публичном
+API Npgsql 8.0.9 сырого `XLogDataMessage` для pgoutput-слотов нет (base
+`ReplicationConnection` даёт только internal-обёртки; публичный путь — расширение
+`StartReplication(PgOutputReplicationSlot, PgOutputReplicationOptions, ct)` →
+`IAsyncEnumerable<PgOutputReplicationMessage>`). requirements.md §8 при этом
+прямо требует `PgOutputReplicationSlot`. Итог: стриминг декодирует типизированными
+сообщениями Npgsql (Begin/Relation/Insert/Commit), `CdcCommon.PgOutputParser`
+остаётся у Polling; CdcCommon переиспользуется для `Lsn`/`Envelope`/`OutboxEvent`/
+`Backoff`/`Percentiles`/`ParseTimestamp` (timestamp парсится тем же кодом, что у
+Polling).
+
+**(б) Значения колонок — только `Get<string>()`.** pgoutput proto v1 передаёт
+колонки текстом, и Npgsql размечает replication-значения как `DataTypeName='text'`
+(вне зависимости от реального типа колонки) — `Get<Guid>()` кидает
+`InvalidCastException: Reading as 'System.Guid' is not supported for fields
+having DataTypeName 'text'` (поймано на живом стенде). Поэтому id/topic/body/
+created_at читаются строками и парсятся на нашей стороне. Сообщения Npgsql
+переиспользуются между итерациями — значения Insert обязаны читаться до
+следующего MoveNextAsync.
+
+**(в) Подтверждаемый LSN = `TransactionEndLsn` последнего acked Commit.** Polling
+двигает слот advance'ом до строчного LSN Commit-записи; стриминг подтверждает
+replication feedback'ом (`SetReplicationStatus` + немедленный `SendStatusUpdate`)
+`TransactionEndLsn` — позицию сразу после commit-записи. Обе точки корректны для
+at-least-once (сервер возобновляет от `confirmed_flush`); разница — та же, что
+между commit_lsn и end_lsn у peek (deviations.md §5). Подтверждать `WalEnd`
+сообщений НЕЛЬЗЯ — это текущий конец WAL на сервере, там могут быть ещё
+недоставленные транзакции. Отправка статуса: `SetReplicationStatus` — только
+Interlocked-присвоение; реальная отправка — `SendStatusUpdate()` (39 байт),
+таймером раз в `WalReceiverStatusInterval` (10 c) или по запросу сервера.
+
+**(г) Батчинг в push-стриме: bounded-канал + drain-or-batch.** У peek-цикла
+естественная граница батча — выборка; у стрима нет способа «спросить, есть ли
+ещё» без блокировки. Поэтому receiver-цикл (стрим → декодер → канал завершённых
+транзакций, ёмкость 2048) отделён от publisher-цикла (WaitToReadAsync → набор до
+`Kafka.BatchSize` или до опустошения канала → публикация чанками с параллельным
+dispatch → acks → подтверждение). Заполненный канал останавливает receiver в
+`WriteAsync` → стрим не читается → TCP backpressure → walsender блокируется →
+WAL копится без подтверждения (§10, TEST-HA-003). Побочный эффект (документируем):
+при длительной недоступности Kafka сервер перестаёт слать keepalive'ы и Npgsql
+может разорвать соединение по `WalReceiverTimeout` (60 c) — это безопасно:
+редоставка после освобождения канала и reconnect'а.
+
+**(д) Почему у Streaming нет watermark-таблицы (`cdc.peek_state`).** Рестарт
+Polling и так восстанавливается от `confirmed_flush` — peek_state в восстановлении
+не участвует; её роль — серверная валидация отдельной SQL-точки входа advance
+(«target ≤ максимальному выданному peek LSN», §5.2). Слот такой границы не даёт:
+peek не оставляет в нём следа, а всякий опасный target тоже > confirmed_flush.
+В Streaming отдельной advance-точки нет вообще — подтверждение это эхо LSN из
+потока того же replication-соединения (`TransactionEndLsn` обработанного
+`CommitMessage`), и серверную проверку «read-before-confirm» в протокол не
+встроить без патча PostgreSQL (запрещён). Гарантия структурная: подтверждаемое
+значение берётся только из Commit'а, чьи события доставлены в Kafka (unit-тесты
++ smoke); плюс у `sys_replication` нет EXECUTE на peek/advance-функциях —
+SQL-путём слот не перепрыгнуть.
+
+**(е) Привилегии sys_replication (фактические).** Для стрима хватило: `LOGIN` +
+`REPLICATION` (атрибут роли из 00-roles.sql) + `CONNECT ON DATABASE outbox`
+(01-db-publication.sql). Для статуса слота — `GRANT USAGE ON SCHEMA cdc` + `GRANT
+EXECUTE ON FUNCTION cdc.outbox_slot_status()` (05-cdc-streaming.sql; SECURITY
+DEFINER, read-only, форма едина с Polling). Прямой доступ к `pg_replication_slots`
+не используется; peek/advance стримингу не грантуются (§8: «Не используй polling
+SQL-функций в этом режиме»).

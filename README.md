@@ -40,8 +40,9 @@ slot (SELECT-polling таблицы не используется). Причин
 (unique violation по PK = прошлый commit прошёл).
 
 **CDC Polling (этап 4, готов)** — `src/CdcPolling` + общая библиотека `src/CdcCommon`
-(парсер бинарного pgoutput — его же использует стриминг этапа 5). Цикл: **peek →
-разбор pgoutput → Kafka (KafkaFlow, acks=all, идемпотентный producer) → advance**;
+(LSN/конверт/backoff/percentiles — общие с Streaming; бинарный парсер pgoutput —
+только Polling). Цикл: **peek → разбор pgoutput → Kafka (KafkaFlow, acks=all,
+идемпотентный producer) → advance**;
 LSN подтверждается **только после** delivery-репорта Kafka (at-least-once, requirements.md 10):
 при недоступной Kafka подтверждения нет и WAL копится; инвалидированный слот — терминальная
 состояние ошибки с диагностикой, без молчаливого пересоздания. Читает от `sys_app` через
@@ -70,8 +71,8 @@ pg-контейнеры и уронить Patroni-кластер; пересбо
 `./scripts/reset/wipe.sh`.
 
 Хост-порты: HAProxy (primary) — **5432**, PgBouncer — 6432, Writer HTTP API — **18080**,
-CDC Polling HTTP API — **18081**, Patroni REST — 8008/8009/8010, Kafka — 9092-9094,
-Prometheus — 9090, HAProxy stats — 8404.
+CDC Polling HTTP API — **18081**, CDC Streaming HTTP API — **18082**, Patroni REST —
+8008/8009/8010, Kafka — 9092-9094, Prometheus — 9090, HAProxy stats — 8404.
 
 ## Writer: управление нагрузкой
 
@@ -162,6 +163,63 @@ deviations.md §5).
 не возникает (PK-детект повторного commit), «неоднозначные» батчи честно считаются отдельно.
 Unit-тесты: `docker run --rm -v "$PWD":/w -w /w mcr.microsoft.com/dotnet/sdk:8.0 dotnet test`.
 
+## CDC Streaming: запуск и наблюдение
+
+Ветка B бенчмарка (requirements.md 8): тот же слот и publication, но чтение —
+**Npgsql Logical Replication API** (`PgOutputReplicationSlot`, pgoutput proto v1)
+от `sys_replication` **напрямую через HAProxy** (replication-протокол PgBouncer не
+проксирует). Цикл: **StartReplication → типизированные сообщения → Kafka (KafkaFlow,
+acks=all, идемпотентный producer) → подтверждение replication feedback'ом**
+(`SetReplicationStatus` + `SendStatusUpdate` — LSN `TransactionEndLsn` последнего
+закоммиченного набора, и только после delivery-репортов Kafka — at-least-once,
+requirements.md 8.1/10). Декодированные события идут из receiver-цикла в publisher-цикл
+через ограниченный канал: заполненный канал останавливает чтение стрима (TCP
+backpressure) — WAL копится, подтверждения нет; при высокой нагрузке публикуются
+полные батчи, на малой — мгновенные флаши.
+
+Отличия от Polling — таблица в [docs/deviations.md](docs/deviations.md) §6
+(транспорт, подтверждение, почему у Streaming нет watermark-таблицы).
+
+Запуск (профиль `streaming`; перед этим остановить Polling — профили изолированы,
+requirements.md 11):
+
+```bash
+docker compose stop cdc-polling 2>/dev/null || true
+docker compose --profile streaming up -d --build cdc-streaming
+./scripts/test/smoke-cdc-streaming.sh   # живая проверка: доставка 500 сообщений, LSN, метрики, рестарт, batch size
+```
+
+HTTP API (порт `CDC_STREAMING_HTTP_PORT`, по умолчанию 18082):
+
+```bash
+S=http://localhost:18082
+
+# Состояние: state, счётчики, lastReceived/confirmed LSN, WAL lag, глубина канала,
+# слот, ошибки, p50/p95/p99 e2e
+curl -s $S/api/cdc/state | python3 -m json.tool
+
+# Health / readiness (ready = БД отвечает и слот валиден) / метрики
+curl -s $S/health; curl -s $S/ready; curl -s $S/metrics | grep cdc_streaming_
+```
+
+Состояния — как у Polling: `running` → (`waiting_kafka` | `waiting_database`) →
+`running`; `error_slot` / `failed` — терминальные. Разрыв replication-соединения
+(failover/switchover — HAProxy рвёт TCP, `on-marked-down shutdown-sessions`)
+даёт `waiting_database` + backoff + повторное подключение от `confirmed_flush`
+слота (неподтверждённое передаётся повторно — дубликаты допустимы, консюмер
+дедуплицирует по `id`).
+
+### Параметры (env, без правки кода)
+
+| .env-переменная | Что задаёт | По умолчанию |
+|---|---|---|
+| `CDC_STREAMING_KAFKA_BATCH_SIZE` | прикладной batch публикации (событий в одном flush-цикле) | 100 |
+| `CDC_STREAMING_HTTP_PORT` | хост-порт HTTP API | 18082 |
+
+Слот/publication/proto_version и endpoint подключения задаются в compose env
+(`CDCSTREAMING__STREAMING__*`, `CDCSTREAMING__CONNECTION__*`) — значения стенда.
+Смена batch: правка `.env` + `docker compose --profile streaming up -d --no-deps cdc-streaming`.
+
 ## Полезные команды
 
 Пароли в примерах (`postgres`, `writer_secret`, …) — значения по умолчанию
@@ -186,7 +244,7 @@ COMMIT;"
 
 # Посмотреть содержимое слота, не потребляя (бинарный pgoutput: B/R/I/C записи).
 # Через haproxy — на актуальный primary (peek/get работают только на primary).
-# ВНИМАНИЕ: при запущенном cdc-polling конкурентный peek даст 55006 (слот занят CDC)
+# ВНИМАНИЕ: при запущенном CDC (polling/streaming) конкурентный peek даст 55006 (слот занят CDC)
 docker compose exec -e PGPASSWORD=postgres pg1 psql -h haproxy -U postgres -d outbox \
   -c "SELECT lsn, xid FROM pg_logical_slot_peek_binary_changes('outbox_slot', NULL, 20, 'proto_version','1','publication_names','outbox_publication')"
 
@@ -226,24 +284,27 @@ docker compose exec kafka1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server loc
 ## Структура
 
 ```
-docker-compose.yml              — вся инфраструктура + Writer + CDC Polling (profile polling)
-streaming-polling-outbox.sln    — .NET-решение (Writer, CdcCommon, CdcPolling + тесты)
+docker-compose.yml              — вся инфраструктура + Writer + CDC (profiles polling/streaming)
+streaming-polling-outbox.sln    — .NET-решение (Writer, CdcCommon, CdcPolling, CdcStreaming + тесты)
 .env.example                    — шаблон переменных окружения (cp .env.example .env)
 AGENTS.md                       — инструкция для агентов (ограничения, грабли)
 src/Writer/                     — Writer: ASP.NET Core 8, net8.0 (Minimal API + генератор)
 src/CdcCommon/                  — общая библиотека CDC: LSN, парсер бинарного pgoutput, конверт, backoff
 src/CdcPolling/                 — CDC Polling: peek → pgoutput → Kafka (KafkaFlow) → advance
+src/CdcStreaming/               — CDC Streaming: Npgsql PgOutput → Kafka (KafkaFlow) → replication feedback
 tests/Writer.UnitTests/         — xunit-тесты критичной логики Writer
 tests/CdcPolling.UnitTests/     — xunit-тесты: golden-байты pgoutput, LSN, конверт, backoff, опции
+tests/CdcStreaming.UnitTests/   — xunit-тесты: карта колонок/сборка события, LSN-конверсия, опции
 infrastructure/
   patroni/                      — Dockerfile (postgres:17.2 + patroni 4.1.5) и patroni.yml
   postgres/init/                — идемпотентный SQL-bootstrap (роли, outbox-таблица, publication,
-                                   слот, SECURITY DEFINER-функции CDC Polling)
+                                   слот, функции CDC Polling, гранты CDC Streaming)
   haproxy/ pgbouncer/ prometheus/
 scripts/
   check-infra.sh                — полная проверка стенда (exit 0 = всё зелёное)
   test/smoke-writer.sh          — живая проверка Writer (прогон/БД/метрики/direct/рестарт)
   test/smoke-cdc-polling.sh     — живая проверка CDC Polling (доставка/LSN/метрики/рестарт/batch size)
+  test/smoke-cdc-streaming.sh   — живая проверка CDC Streaming (доставка/feedback/метрики/рестарт/batch size)
   init/apply-bootstrap.sh       — повторный запуск инициализации БД
   reset/wipe.sh                 — полный сброс (down -v)
 docs/
@@ -252,7 +313,7 @@ docs/
 
 ## Что дальше (по плану requirements.md)
 
-Этап 5: CDC Streaming (`sys_replication`, Npgsql PgOutput; профиль `streaming`, общий
-парсер из `src/CdcCommon`). Далее: метрики CDC-инфраструктуры, HA-тесты TEST-HA-001..008,
-benchmark-циклы A/B (полный wipe между ними, requirements.md 11) и сравнительный отчёт.
-Отложено владельцем на поздний этап: Schema Registry + Avro-тело сообщения (сейчас body — JSON `jsonb`).
+Далее: метрики CDC-инфраструктуры (§13.3), HA-тесты TEST-HA-001..008 (в т.ч.
+TEST-HA-004 — убийство walsender для стриминга), benchmark-циклы A/B (полный wipe
+между ними, requirements.md 11) и сравнительный отчёт. Отложено владельцем на
+поздний этап: Schema Registry + Avro-тело сообщения (сейчас body — JSON `jsonb`).

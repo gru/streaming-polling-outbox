@@ -132,10 +132,13 @@ section "Сквозной smoke: INSERT+DELETE в одной транзакци�
 # Writer держит outbox пустым (решение владельца): строка существует только внутри
 # транзакции, сообщение живёт в WAL. Здесь проверяем, что такие изменения
 # logical decoding по-прежнему эмитит.
-# Если запущен cdc-polling — он потребляет слот непрерывно, и конкурентный peek
-# отсюда получит 55006 object_in_use; live-проверку peek пропускаем (сам CDC
-# проверяется отдельным smoke-cdc-polling.sh).
+# Если запущен любой CDC (polling/streaming — профили взаимоисключающие,
+# requirements.md 11) — он непрерывно держит слот, и конкурентный peek отсюда
+# получит 55006 object_in_use; live-проверку peek пропускаем (сами CDC
+# проверяются отдельными smoke-cdc-polling.sh / smoke-cdc-streaming.sh).
 cdc_polling_running=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c 'cdc-polling' || true)
+cdc_streaming_running=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c 'cdc-streaming' || true)
+cdc_slot_busy=$(( cdc_polling_running + cdc_streaming_running ))
 peek_count() {
   psql_primary -Atc "SELECT count(*) FROM pg_logical_slot_peek_binary_changes('outbox_slot', NULL, NULL, 'proto_version','1','publication_names','outbox_publication')" 2>/dev/null
 }
@@ -153,8 +156,8 @@ COMMIT;" 2>&1 | tr '\n' ' ')
 # у sys_writer только INSERT+DELETE и колоночный SELECT(id) (минимум по requirements.md 5).
 [[ "$inserted" == *"INSERT 0 1"* && "$inserted" == *"DELETE 1"* ]] && ok "sys_writer: INSERT+DELETE в одной транзакции через PgBouncer" || bad "INSERT+DELETE через PgBouncer: $inserted"
 after=""
-if [[ "$cdc_polling_running" != "0" ]]; then
-  ok "cdc-polling запущен — live-peek отсюда пропущен (слот потребляет CDC, конкурентный peek = 55006)"
+if [[ "$cdc_slot_busy" != "0" ]]; then
+  ok "CDC запущен (polling=$cdc_polling_running streaming=$cdc_streaming_running) — live-peek отсюда пропущен (слот занят CDC, конкурентный peek = 55006)"
 else
   for _ in $(seq 1 15); do
     after=$(peek_count)
@@ -197,8 +200,8 @@ app_status=$($DC exec -T -e PGPASSWORD="$SYS_APP_PASSWORD" pg1 psql -h pgbouncer
 direct=$($DC exec -T -e PGPASSWORD="$SYS_APP_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_app -d outbox -Atc \
   "SELECT count(*) FROM pg_logical_slot_peek_binary_changes('outbox_slot', NULL, 10, 'proto_version','1','publication_names','outbox_publication')" 2>&1)
 [[ "$direct" == *"permission denied"* ]] && ok "прямой peek от sys_app запрещён (permission denied — wrapper необходим)" || bad "прямой peek: $direct"
-if [[ "$cdc_polling_running" != "0" ]]; then
-  ok "cdc-polling запущен — live-проверки peek/advance от sys_app пропущены (слот занят CDC)"
+if [[ "$cdc_slot_busy" != "0" ]]; then
+  ok "CDC запущен (polling=$cdc_polling_running streaming=$cdc_streaming_running) — live-проверки peek/advance от sys_app пропущены (слот занят CDC)"
 else
   app_peek=$($DC exec -T -e PGPASSWORD="$SYS_APP_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_app -d outbox -Atc "SELECT count(*) FROM cdc.peek_outbox_changes(10)" 2>&1)
   [[ "$app_peek" =~ ^[0-9]+$ ]] && ok "sys_app: cdc.peek_outbox_changes(10) работает (строк: $app_peek, peek не потребляет)" || bad "peek от sys_app: $app_peek"
@@ -232,20 +235,35 @@ section "Prometheus"
 ready=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost:9090/-/ready)
 [[ "$ready" == "200" ]] && ok "/-/ready = 200" || bad "/-/ready = $ready"
 targets=$(curl -s --max-time 5 http://localhost:9090/api/v1/targets)
-targets_result=$(python3 - "$targets" <<'PY'
+# Таргеты остановленного CDC-профиля ожидаемо down (polling/streaming никогда
+# не работают вместе, requirements.md 11): требуем up для всех, КРОМЕ
+# cdc-polling/cdc-streaming, чей контейнер сейчас не запущен
+targets_result=$(python3 - "$targets" "$cdc_polling_running" "$cdc_streaming_running" <<'PY'
 import json, sys
 try:
     t = json.loads(sys.argv[1])["data"]["activeTargets"]
-    up = [x for x in t if x["health"] == "up"]
-    print(f"total={len(t)} up={len(up)}")
+    polling_up = sys.argv[2] != "0"
+    streaming_up = sys.argv[3] != "0"
+    down = []
+    for x in t:
+        if x["health"] != "up":
+            url = x["scrapeUrl"]
+            if "cdc-polling" in url and not polling_up:
+                continue
+            if "cdc-streaming" in url and not streaming_up:
+                continue
+            down.append(url)
+    print(f"total={len(t)} up={len(t) - len(down)} down_unexpected={len(down)}")
 except Exception as e:
     print(f"PARSE_ERROR {e}")
 PY
 )
 echo "  targets: $targets_result"
-total_t=$(echo "$targets_result" | grep -o 'total=[0-9]*' | cut -d= -f2)
-up_t=$(echo "$targets_result" | grep -o 'up=[0-9]*' | cut -d= -f2)
-if [[ -n "$up_t" && "$total_t" == "$up_t" && "$total_t" -gt 0 ]]; then ok "все scrape-таргеты up ($up_t/$total_t)"; else bad "таргеты: $targets_result"; fi
+if [[ "$targets_result" == *"down_unexpected=0"* && "$targets_result" != *"PARSE_ERROR"* ]]; then
+  ok "все ожидаемые scrape-таргеты up ($targets_result)"
+else
+  bad "таргеты: $targets_result"
+fi
 
 printf '\n\033[1mИТОГ: PASS=%d FAIL=%d\033[0m\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

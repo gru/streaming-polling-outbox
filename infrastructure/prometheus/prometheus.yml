@@ -29,6 +29,8 @@ scrape_configs:
     static_configs:
       - targets: ['cdc-polling:8080']
 
-  # Placeholder для CDC Streaming (этап 5):
-  # - job_name: cdc-streaming
-  #   static_configs: [{ targets: ['cdc-streaming:8080'] }]
+  # Этап 5: CDC Streaming (target поднимается вместе с сервисом --profile streaming;
+  # профили polling/streaming никогда не работают на одном слоте одновременно)
+  - job_name: cdc-streaming
+    static_configs:
+      - targets: ['cdc-streaming:8080']

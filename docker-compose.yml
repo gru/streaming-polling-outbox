@@ -233,7 +233,7 @@ services:
         until psql -h haproxy -U postgres -d postgres -tAc "SELECT pg_is_in_recovery()" 2>/dev/null | grep -q f; do
           sleep 2
         done
-        for f in /init/00-roles.sql /init/01-db-publication.sql /init/02-slot.sql /init/04-cdc-polling.sql; do
+        for f in /init/00-roles.sql /init/01-db-publication.sql /init/02-slot.sql /init/04-cdc-polling.sql /init/05-cdc-streaming.sql; do
           echo "[init-db] Applying $$f"
           psql -v ON_ERROR_STOP=1 -h haproxy -U postgres -d postgres \
             -v sys_writer_password="$$SYS_WRITER_PASSWORD" \
@@ -469,6 +469,58 @@ services:
     depends_on:
       haproxy: {condition: service_healthy}
       pgbouncer: {condition: service_healthy}
+      kafka1: {condition: service_healthy}
+      kafka2: {condition: service_healthy}
+      kafka3: {condition: service_healthy}
+      # topic создаётся до старта CDC (сам CDC topic не создаёт, requirements.md 3.2)
+      kafka-init: {condition: service_completed_successfully}
+
+  # ---------- CDC Streaming (этап 5) ----------
+
+  # Читает слот Npgsql Logical Replication API (PgOutputReplicationSlot, pgoutput
+  # proto v1) от sys_replication — НАПРЯМУЮ через haproxy:5432 (PgBouncer
+  # replication-протокол не проксирует, requirements.md 3.3). Публикует в Kafka
+  # (KafkaFlow) и подтверждает LSN replication feedback'ом только после Kafka
+  # delivery. Profile streaming: Polling и Streaming никогда не работают на одном
+  # слоте одновременно (requirements.md 11); перед запуском остановить cdc-polling.
+  # Запуск: docker compose --profile streaming up -d --build cdc-streaming.
+  # Прикладной batch Kafka настраивается через env без правки кода (requirements.md 9).
+  # Хост-порт 18082 (18080 — Writer, 18081 — CDC Polling).
+  cdc-streaming:
+    profiles: ["streaming"]
+    build:
+      context: ./src
+      dockerfile: CdcStreaming/Dockerfile
+    image: streaming-polling-outbox/cdc-streaming:net8.0
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      CDCSTREAMING__CONNECTION__ENDPOINT__HOST: haproxy
+      CDCSTREAMING__CONNECTION__ENDPOINT__PORT: "5432"
+      CDCSTREAMING__CONNECTION__DATABASE__NAME: outbox
+      CDCSTREAMING__CONNECTION__DATABASE__USERNAME: sys_replication
+      CDCSTREAMING__CONNECTION__DATABASE__PASSWORD: ${SYS_REPLICATION_PASSWORD:?set in .env}
+      CDCSTREAMING__STREAMING__SLOTNAME: outbox_slot
+      CDCSTREAMING__STREAMING__PUBLICATION: outbox_publication
+      CDCSTREAMING__STREAMING__CHANNELCAPACITY: "2048"
+      CDCSTREAMING__KAFKA__BROKERS: kafka1:9092,kafka2:9092,kafka3:9092
+      CDCSTREAMING__KAFKA__TOPIC: outbox.events
+      CDCSTREAMING__KAFKA__BATCHSIZE: ${CDC_STREAMING_KAFKA_BATCH_SIZE:-100}
+      CDCSTREAMING__KAFKA__LINGERMS: "5"
+      CDCSTREAMING__KAFKA__MESSAGETIMEOUTMS: "15000"
+    networks: [outbox-net]
+    ports:
+      - "${CDC_STREAMING_HTTP_PORT:-18082}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      # PgBouncer сознательно НЕ в зависимостях: replication идёт мимо него
+      haproxy: {condition: service_healthy}
       kafka1: {condition: service_healthy}
       kafka2: {condition: service_healthy}
       kafka3: {condition: service_healthy}
