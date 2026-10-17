@@ -2,469 +2,473 @@
   "arm": "streaming",
   "cycle": "B (streaming)",
   "git": {
-    "commit": "7dd6dd678c4ac0df5715538e7b204e94145b2499"
+    "commit": "4a8e6379eca4cbfa89a5f3ca394809364f6cf1a3"
   },
   "resources": {
     "cdc": {
-      "cpuAvgPercent": 3.5,
-      "cpuMaxPercent": 28.4,
-      "memAvgBytes": 139841908,
-      "memMaxBytes": 186122240,
-      "slices": 22
+      "cpuAvgPercent": 3.6,
+      "cpuMaxPercent": 65.5,
+      "memAvgBytes": 255055832,
+      "memMaxBytes": 2228014285,
+      "slices": 173
     },
     "kafka": {
-      "cpuAvgPercent": 30.7,
-      "cpuMaxPercent": 182.5,
-      "memAvgBytes": 1132495444,
-      "memMaxBytes": 1265211802,
-      "slices": 22
+      "cpuAvgPercent": 15.1,
+      "cpuMaxPercent": 128.5,
+      "memAvgBytes": 1260274403,
+      "memMaxBytes": 1621622784,
+      "slices": 173
     },
     "postgresql": {
-      "cpuAvgPercent": 4.2,
-      "cpuMaxPercent": 23.2,
-      "memAvgBytes": 293086048,
-      "memMaxBytes": 316344893,
-      "slices": 22
+      "cpuAvgPercent": 4.6,
+      "cpuMaxPercent": 38.8,
+      "memAvgBytes": 325701525,
+      "memMaxBytes": 745013249,
+      "slices": 173
     },
     "window": {
-      "fromMs": 1792261035356,
-      "toMs": 1792261203346
+      "fromMs": 1792268417395,
+      "toMs": 1792269744966
     },
     "writer": {
-      "cpuAvgPercent": 1.1,
-      "cpuMaxPercent": 5.0,
-      "memAvgBytes": 83737850,
-      "memMaxBytes": 150156083,
-      "slices": 22
+      "cpuAvgPercent": 1.4,
+      "cpuMaxPercent": 15.2,
+      "memAvgBytes": 154003205,
+      "memMaxBytes": 246415360,
+      "slices": 173
     }
   },
   "scenarios": [
     {
       "arm": "streaming",
       "cdc": {
-        "deliveredDelta": 2000,
-        "deliveryRateAvgPerSecond": 48.9,
-        "deliveryRateOverallPerSecond": 49.0,
-        "deliveryRatePeakPerSecond": 142.0,
-        "e2eMeanMs": 20.3,
-        "e2eP50Ms": 20.4712,
-        "e2eP95Ms": 753.9218,
-        "e2eP99Ms": 1259.1043,
-        "e2eSamples": 2000,
+        "deliveredDelta": 30000,
+        "deliveryRateAvgPerSecond": 50.0,
+        "deliveryRateOverallPerSecond": 50.1,
+        "deliveryRatePeakPerSecond": 141.6,
+        "e2eMeanMs": 32.5,
+        "e2eP50Ms": 18.5711,
+        "e2eP95Ms": 24.17,
+        "e2eP99Ms": 39.0948,
+        "e2eSamples": 29900,
         "kafkaErrors": 0,
-        "readDelta": 2000,
+        "readDelta": 30000,
         "readErrors": 0,
         "reconnects": 0,
         "retries": 0,
-        "samplerRows": 39,
+        "samplerRows": 566,
         "walLagBytesAfter": 0
       },
-      "description": "равномерная низкая нагрузка 2000@50/s",
+      "description": "равномерная низкая нагрузка 30000@50/s (~10 мин)",
       "name": "s1-steady-50",
       "resources": {
         "cdc": {
-          "cpuAvgPercent": 2.2,
-          "cpuMaxPercent": 4.7,
-          "memAvgBytes": 98024380,
-          "memMaxBytes": 109261619,
-          "resourceWindowMs": 44831,
-          "slices": 6
+          "cpuAvgPercent": 1.8,
+          "cpuMaxPercent": 5.2,
+          "memAvgBytes": 173700782,
+          "memMaxBytes": 200697446,
+          "resourceWindowMs": 603399,
+          "slices": 78
         },
         "kafka": {
-          "cpuAvgPercent": 31.7,
-          "cpuMaxPercent": 69.9,
-          "memAvgBytes": 1048628429,
-          "memMaxBytes": 1161612493,
-          "resourceWindowMs": 44831,
-          "slices": 6
+          "cpuAvgPercent": 13.2,
+          "cpuMaxPercent": 46.6,
+          "memAvgBytes": 1156586050,
+          "memMaxBytes": 1233230234,
+          "resourceWindowMs": 603399,
+          "slices": 78
         },
         "postgresql": {
-          "cpuAvgPercent": 3.6,
-          "cpuMaxPercent": 9.9,
-          "memAvgBytes": 282963476,
-          "memMaxBytes": 283975352,
-          "resourceWindowMs": 44831,
-          "slices": 6
+          "cpuAvgPercent": 3.4,
+          "cpuMaxPercent": 10.5,
+          "memAvgBytes": 285228804,
+          "memMaxBytes": 287718768,
+          "resourceWindowMs": 603399,
+          "slices": 78
         }
       },
-      "runId": "08cc6eb0-b5b3-4be6-8b92-e6d03729545b",
+      "runId": "e9905f26-4a4f-4190-ba43-45e42e27f83a",
       "spec": {
         "batchSize": 50,
         "messageSizeBytes": 256,
         "parallelism": 4,
         "ratePerSecond": 50,
-        "totalMessages": 2000
+        "totalMessages": 30000
       },
       "timings": {
-        "deliveryTotalMs": 40831,
-        "drainMs": 106,
-        "t0EpochMs": 1792261035356,
-        "t2EpochMs": 1792261076187,
-        "writerMs": 40725
+        "deliveryTotalMs": 599399,
+        "drainMs": 97,
+        "t0EpochMs": 1792268417395,
+        "t2EpochMs": 1792269016794,
+        "writerMs": 599302
       },
       "verdict": {
         "duplicates": 0,
         "missing": 0,
         "unexpectedExtra": 0,
-        "uniqueIds": 2000,
+        "uniqueIds": 30000,
         "verdict": "pass"
       },
       "writer": {
         "ambiguousUnresolved": 0,
-        "batchP50Ms": 4.9124,
-        "batchP95Ms": 8.343,
-        "batchP99Ms": 15.6855,
-        "commitP50Ms": 2.5246,
-        "commitP95Ms": 3.9802,
-        "commitP99Ms": 10.7458,
-        "durationSeconds": 39.0020977,
+        "batchP50Ms": 5.8457,
+        "batchP95Ms": 9.4922,
+        "batchP99Ms": 13.477,
+        "commitP50Ms": 2.7041,
+        "commitP95Ms": 4.9515,
+        "commitP99Ms": 7.6204,
+        "durationSeconds": 599.0091037,
         "failed": 0,
         "reconnects": 0,
-        "writerRatePerSecond": 51.3,
-        "written": 2000
+        "writerRatePerSecond": 50.1,
+        "written": 30000
       }
     },
     {
       "arm": "streaming",
       "cdc": {
-        "deliveredDelta": 3000,
-        "deliveryRateAvgPerSecond": 197.6,
-        "deliveryRateOverallPerSecond": 181.8,
-        "deliveryRatePeakPerSecond": 284.9,
-        "e2eMeanMs": 16.7,
-        "e2eP50Ms": 16.3558,
-        "e2eP95Ms": 25.1381,
-        "e2eP99Ms": 32.3876,
-        "e2eSamples": 3000,
+        "deliveredDelta": 60000,
+        "deliveryRateAvgPerSecond": 199.7,
+        "deliveryRateOverallPerSecond": 200.0,
+        "deliveryRatePeakPerSecond": 278.8,
+        "e2eMeanMs": 17.3,
+        "e2eP50Ms": 15.399,
+        "e2eP95Ms": 20.1998,
+        "e2eP99Ms": 22.3992,
+        "e2eSamples": 60000,
         "kafkaErrors": 0,
-        "readDelta": 3000,
+        "readDelta": 60000,
         "readErrors": 0,
         "reconnects": 0,
         "retries": 0,
-        "samplerRows": 16,
+        "samplerRows": 284,
         "walLagBytesAfter": 0
       },
-      "description": "равномерная высокая нагрузка 3000@200/s",
+      "description": "равномерная высокая нагрузка 60000@200/s (5 мин)",
       "name": "s2-steady-200",
       "resources": {
         "cdc": {
-          "cpuAvgPercent": 10.2,
-          "cpuMaxPercent": 15.8,
-          "memAvgBytes": 142868480,
-          "memMaxBytes": 162843853,
-          "resourceWindowMs": 20500,
-          "slices": 2
+          "cpuAvgPercent": 4.0,
+          "cpuMaxPercent": 9.4,
+          "memAvgBytes": 212105416,
+          "memMaxBytes": 217998950,
+          "resourceWindowMs": 304025,
+          "slices": 39
         },
         "kafka": {
-          "cpuAvgPercent": 23.8,
-          "cpuMaxPercent": 26.6,
-          "memAvgBytes": 1091724902,
-          "memMaxBytes": 1096705638,
-          "resourceWindowMs": 20500,
-          "slices": 2
+          "cpuAvgPercent": 15.7,
+          "cpuMaxPercent": 51.0,
+          "memAvgBytes": 1292845812,
+          "memMaxBytes": 1351824179,
+          "resourceWindowMs": 304025,
+          "slices": 39
         },
         "postgresql": {
-          "cpuAvgPercent": 3.7,
-          "cpuMaxPercent": 4.8,
-          "memAvgBytes": 284756542,
-          "memMaxBytes": 285254615,
-          "resourceWindowMs": 20500,
-          "slices": 2
+          "cpuAvgPercent": 5.7,
+          "cpuMaxPercent": 14.9,
+          "memAvgBytes": 299503956,
+          "memMaxBytes": 303835382,
+          "resourceWindowMs": 304025,
+          "slices": 39
         }
       },
-      "runId": "7c35c624-bdca-48b4-bcb4-5b7068d5fbc8",
+      "runId": "5c6ae902-ad01-459b-8c7d-f54104197af5",
       "spec": {
         "batchSize": 50,
         "messageSizeBytes": 256,
         "parallelism": 4,
         "ratePerSecond": 200,
-        "totalMessages": 3000
+        "totalMessages": 60000
       },
       "timings": {
-        "deliveryTotalMs": 16500,
-        "drainMs": 152,
-        "t0EpochMs": 1792261097390,
-        "t2EpochMs": 1792261113890,
-        "writerMs": 16348
+        "deliveryTotalMs": 300025,
+        "drainMs": 111,
+        "t0EpochMs": 1792269038429,
+        "t2EpochMs": 1792269338454,
+        "writerMs": 299914
       },
       "verdict": {
         "duplicates": 0,
         "missing": 0,
         "unexpectedExtra": 0,
-        "uniqueIds": 3000,
+        "uniqueIds": 60000,
         "verdict": "pass"
       },
       "writer": {
         "ambiguousUnresolved": 0,
-        "batchP50Ms": 4.249,
-        "batchP95Ms": 6.8329,
-        "batchP99Ms": 7.788,
-        "commitP50Ms": 1.8899,
-        "commitP95Ms": 2.9637,
-        "commitP99Ms": 3.254,
-        "durationSeconds": 14.7538247,
+        "batchP50Ms": 5.3785,
+        "batchP95Ms": 9.2758,
+        "batchP99Ms": 11.6211,
+        "commitP50Ms": 2.5042,
+        "commitP95Ms": 4.516,
+        "commitP99Ms": 7.2163,
+        "durationSeconds": 299.7525881,
         "failed": 0,
         "reconnects": 0,
-        "writerRatePerSecond": 203.3,
-        "written": 3000
+        "writerRatePerSecond": 200.2,
+        "written": 60000
       }
     },
     {
       "arm": "streaming",
       "cdc": {
-        "deliveredDelta": 2000,
-        "deliveryRateOverallPerSecond": 900.9,
-        "deliveryRatePeakPerSecond": 1899.3,
-        "e2eP50Ms": 24.6356,
-        "e2eP95Ms": 185.0541,
-        "e2eP99Ms": 197.9696,
+        "deliveredDelta": 20000,
+        "deliveryRateAvgPerSecond": 10219.7,
+        "deliveryRateOverallPerSecond": 9000.9,
+        "deliveryRatePeakPerSecond": 10219.7,
+        "e2eMeanMs": 838.1,
+        "e2eP50Ms": 1398.9838,
+        "e2eP95Ms": 1575.8313,
+        "e2eP99Ms": 1592.0043,
+        "e2eSamples": 20000,
         "kafkaErrors": 0,
-        "readDelta": 2000,
+        "readDelta": 20000,
         "readErrors": 0,
         "reconnects": 0,
         "retries": 0,
         "samplerRows": 3,
-        "walLagBytesAfter": 726840
+        "walLagBytesAfter": 6460448
       },
-      "description": "короткий burst 2000 без rate-limit",
+      "description": "backlog-drain: burst 20000 без rate-limit (короткий по смыслу: скорость выборки)",
       "name": "s3-burst",
       "resources": {
         "cdc": {
-          "cpuAvgPercent": 0.4,
-          "cpuMaxPercent": 0.8,
-          "memAvgBytes": 162948710,
-          "memMaxBytes": 163053568,
+          "cpuAvgPercent": 0.2,
+          "cpuMaxPercent": 0.3,
+          "memAvgBytes": 251343667,
+          "memMaxBytes": 284688384,
           "resourceWindowMs": 16000,
           "slices": 2
         },
         "kafka": {
-          "cpuAvgPercent": 11.1,
-          "cpuMaxPercent": 14.1,
-          "memAvgBytes": 1164024218,
-          "memMaxBytes": 1229455360,
+          "cpuAvgPercent": 5.9,
+          "cpuMaxPercent": 6.1,
+          "memAvgBytes": 1459355648,
+          "memMaxBytes": 1593311232,
           "resourceWindowMs": 16000,
           "slices": 2
         },
         "postgresql": {
-          "cpuAvgPercent": 2.5,
-          "cpuMaxPercent": 3.4,
-          "memAvgBytes": 290565652,
-          "memMaxBytes": 295520174,
+          "cpuAvgPercent": 2.8,
+          "cpuMaxPercent": 5.0,
+          "memAvgBytes": 316434022,
+          "memMaxBytes": 329766666,
           "resourceWindowMs": 16000,
           "slices": 2
         }
       },
-      "runId": "79ae0716-0be0-4890-91d6-ca771fcd15e5",
+      "runId": "84896b76-c650-4a07-bd60-ade10b934373",
       "spec": {
         "batchSize": 100,
         "messageSizeBytes": 256,
         "parallelism": 8,
-        "totalMessages": 2000
+        "totalMessages": 20000
       },
       "timings": {
-        "deliveryTotalMs": 2220,
-        "drainMs": 104,
-        "t0EpochMs": 1792261134666,
-        "t2EpochMs": 1792261136886,
-        "writerMs": 2116
+        "deliveryTotalMs": 2222,
+        "drainMs": 107,
+        "t0EpochMs": 1792269360790,
+        "t2EpochMs": 1792269363012,
+        "writerMs": 2115
       },
       "verdict": {
         "duplicates": 0,
         "missing": 0,
         "unexpectedExtra": 0,
-        "uniqueIds": 2000,
+        "uniqueIds": 20000,
         "verdict": "pass"
       },
       "writer": {
         "ambiguousUnresolved": 0,
-        "batchP50Ms": 17.7149,
-        "batchP95Ms": 33.6133,
-        "batchP99Ms": 33.7485,
-        "commitP50Ms": 3.5915,
-        "commitP95Ms": 5.9959,
-        "commitP99Ms": 6.0407,
-        "durationSeconds": 0.0537929,
+        "batchP50Ms": 8.4351,
+        "batchP95Ms": 43.684,
+        "batchP99Ms": 63.636,
+        "commitP50Ms": 3.9965,
+        "commitP95Ms": 22.6142,
+        "commitP99Ms": 61.2091,
+        "durationSeconds": 0.3728389,
         "failed": 0,
         "reconnects": 0,
-        "writerRatePerSecond": 37179.6,
-        "written": 2000
+        "writerRatePerSecond": 53642.5,
+        "written": 20000
       }
     },
     {
       "arm": "streaming",
       "cdc": {
-        "deliveredDelta": 1000,
-        "deliveryRateAvgPerSecond": 50.4,
-        "deliveryRateOverallPerSecond": 48.8,
-        "deliveryRatePeakPerSecond": 95.4,
-        "e2eMeanMs": 24.4,
-        "e2eP50Ms": 32.3216,
-        "e2eP95Ms": 185.0541,
-        "e2eP99Ms": 197.9696,
-        "e2eSamples": 1000,
+        "deliveredDelta": 15000,
+        "deliveryRateAvgPerSecond": 50.0,
+        "deliveryRateOverallPerSecond": 50.0,
+        "deliveryRatePeakPerSecond": 95.9,
+        "e2eMeanMs": 46.3,
+        "e2eP50Ms": 23.4511,
+        "e2eP95Ms": 41.4246,
+        "e2eP99Ms": 1025.3128,
+        "e2eSamples": 15000,
         "kafkaErrors": 0,
-        "readDelta": 1000,
+        "readDelta": 15000,
         "readErrors": 0,
         "reconnects": 0,
         "retries": 0,
-        "samplerRows": 20,
+        "samplerRows": 284,
         "walLagBytesAfter": 0
       },
-      "description": "крупные сообщения 1000@50/s x4096B",
+      "description": "крупные сообщения 15000@50/s x4096B (5 мин)",
       "name": "s4-large-4k",
       "resources": {
         "cdc": {
-          "cpuAvgPercent": 3.3,
-          "cpuMaxPercent": 6.2,
-          "memAvgBytes": 163962334,
-          "memMaxBytes": 164207002,
-          "resourceWindowMs": 24496,
-          "slices": 3
+          "cpuAvgPercent": 1.6,
+          "cpuMaxPercent": 3.6,
+          "memAvgBytes": 281671711,
+          "memMaxBytes": 344352358,
+          "resourceWindowMs": 304233,
+          "slices": 39
         },
         "kafka": {
-          "cpuAvgPercent": 13.8,
-          "cpuMaxPercent": 19.9,
-          "memAvgBytes": 1147002334,
-          "memMaxBytes": 1153433599,
-          "resourceWindowMs": 24496,
-          "slices": 3
+          "cpuAvgPercent": 8.8,
+          "cpuMaxPercent": 23.4,
+          "memAvgBytes": 1354424110,
+          "memMaxBytes": 1365036237,
+          "resourceWindowMs": 304233,
+          "slices": 39
         },
         "postgresql": {
-          "cpuAvgPercent": 2.4,
-          "cpuMaxPercent": 3.6,
-          "memAvgBytes": 308508536,
-          "memMaxBytes": 313608110,
-          "resourceWindowMs": 24496,
-          "slices": 3
+          "cpuAvgPercent": 4.4,
+          "cpuMaxPercent": 10.9,
+          "memAvgBytes": 380197526,
+          "memMaxBytes": 391852851,
+          "resourceWindowMs": 304233,
+          "slices": 39
         }
       },
-      "runId": "bd94df91-cb11-478a-a4f2-53d43bc2be8e",
+      "runId": "3acb75aa-031b-4926-a44d-e6c92ad0b178",
       "spec": {
         "batchSize": 50,
         "messageSizeBytes": 4096,
         "parallelism": 4,
         "ratePerSecond": 50,
-        "totalMessages": 1000
+        "totalMessages": 15000
       },
       "timings": {
-        "deliveryTotalMs": 20496,
+        "deliveryTotalMs": 300233,
         "drainMs": 103,
-        "t0EpochMs": 1792261158634,
-        "t2EpochMs": 1792261179130,
-        "writerMs": 20393
+        "t0EpochMs": 1792269384871,
+        "t2EpochMs": 1792269685104,
+        "writerMs": 300130
       },
       "verdict": {
         "duplicates": 0,
         "missing": 0,
         "unexpectedExtra": 0,
-        "uniqueIds": 1000,
+        "uniqueIds": 15000,
         "verdict": "pass"
       },
       "writer": {
         "ambiguousUnresolved": 0,
-        "batchP50Ms": 9.2907,
-        "batchP95Ms": 14.0783,
-        "batchP99Ms": 16.7561,
-        "commitP50Ms": 2.8723,
-        "commitP95Ms": 4.2418,
-        "commitP99Ms": 5.0416,
-        "durationSeconds": 19.0025849,
+        "batchP50Ms": 8.5487,
+        "batchP95Ms": 13.3266,
+        "batchP99Ms": 51.0817,
+        "commitP50Ms": 2.4326,
+        "commitP95Ms": 4.467,
+        "commitP99Ms": 46.9594,
+        "durationSeconds": 299.0060133,
         "failed": 0,
         "reconnects": 0,
-        "writerRatePerSecond": 52.6,
-        "written": 1000
+        "writerRatePerSecond": 50.2,
+        "written": 15000
       }
     },
     {
       "arm": "streaming",
       "cdc": {
-        "deliveredDelta": 8000,
-        "deliveryRateOverallPerSecond": 3618.3,
-        "deliveryRatePeakPerSecond": 7604.6,
-        "e2eMeanMs": 433.5,
-        "e2eP50Ms": 592.1047,
-        "e2eP95Ms": 745.278,
-        "e2eP99Ms": 756.7195,
-        "e2eSamples": 8000,
+        "deliveredDelta": 400000,
+        "deliveryRateAvgPerSecond": 10932.9,
+        "deliveryRateOverallPerSecond": 10734.5,
+        "deliveryRatePeakPerSecond": 12696.1,
+        "e2eMeanMs": 16472.1,
+        "e2eP50Ms": 32265.8103,
+        "e2eP95Ms": 32398.5955,
+        "e2eP99Ms": 32415.3873,
+        "e2eSamples": 389782,
         "kafkaErrors": 0,
-        "readDelta": 8000,
+        "readDelta": 400000,
         "readErrors": 0,
         "reconnects": 0,
         "retries": 0,
-        "samplerRows": 3,
-        "walLagBytesAfter": 1754432
+        "samplerRows": 36,
+        "walLagBytesAfter": 8204408
       },
-      "description": "максимальная пропускная 8000 без rate-limit",
+      "description": "max throughput: backlog 400000 без rate-limit — Writer пишет секунды (замерено 67-108k msg/s), CDC минуты выбирает backlog на пределе; узкое место — сам CDC по построению. Объём ограничен снизу не CDC (~4.5-9k/s), а валидатором (~700 записей/с подтверждения) — 1M делал подтверждение дольше 15 минут",
       "name": "s5-throughput",
       "resources": {
         "cdc": {
-          "cpuAvgPercent": 15.1,
-          "cpuMaxPercent": 28.4,
-          "memAvgBytes": 186122240,
-          "memMaxBytes": 186122240,
-          "resourceWindowMs": 16000,
-          "slices": 2
+          "cpuAvgPercent": 52.9,
+          "cpuMaxPercent": 65.5,
+          "memAvgBytes": 1713214640,
+          "memMaxBytes": 2228014285,
+          "resourceWindowMs": 41263,
+          "slices": 5
         },
         "kafka": {
-          "cpuAvgPercent": 98.9,
-          "cpuMaxPercent": 182.5,
-          "memAvgBytes": 1227515494,
-          "memMaxBytes": 1270349824,
-          "resourceWindowMs": 16000,
-          "slices": 2
+          "cpuAvgPercent": 97.8,
+          "cpuMaxPercent": 128.5,
+          "memAvgBytes": 1406958305,
+          "memMaxBytes": 1411802726,
+          "resourceWindowMs": 41263,
+          "slices": 5
         },
         "postgresql": {
-          "cpuAvgPercent": 1.8,
-          "cpuMaxPercent": 2.9,
-          "memAvgBytes": 316507422,
-          "memMaxBytes": 316669952,
-          "resourceWindowMs": 16000,
-          "slices": 2
+          "cpuAvgPercent": 17.7,
+          "cpuMaxPercent": 38.8,
+          "memAvgBytes": 732052849,
+          "memMaxBytes": 745013249,
+          "resourceWindowMs": 41263,
+          "slices": 5
         }
       },
-      "runId": "23bf9d87-557a-40b9-908c-53614ca4b585",
+      "runId": "9661c668-1dbf-4327-b408-bb2febe127da",
       "spec": {
         "batchSize": 100,
         "messageSizeBytes": 256,
         "parallelism": 8,
-        "totalMessages": 8000
+        "totalMessages": 400000
       },
       "timings": {
-        "deliveryTotalMs": 2211,
-        "drainMs": 99,
-        "t0EpochMs": 1792261201135,
-        "t2EpochMs": 1792261203346,
-        "writerMs": 2112
+        "deliveryTotalMs": 37263,
+        "drainMs": 31060,
+        "t0EpochMs": 1792269707703,
+        "t2EpochMs": 1792269744966,
+        "writerMs": 6203
       },
       "verdict": {
         "duplicates": 0,
         "missing": 0,
         "unexpectedExtra": 0,
-        "uniqueIds": 8000,
+        "uniqueIds": 400000,
         "verdict": "pass"
       },
       "writer": {
         "ambiguousUnresolved": 0,
-        "batchP50Ms": 11.1257,
-        "batchP95Ms": 42.7483,
-        "batchP99Ms": 50.2132,
-        "commitP50Ms": 5.2405,
-        "commitP95Ms": 13.4621,
-        "commitP99Ms": 41.3822,
-        "durationSeconds": 0.157275,
+        "batchP50Ms": 5.2387,
+        "batchP95Ms": 21.5634,
+        "batchP99Ms": 65.3008,
+        "commitP50Ms": 2.3308,
+        "commitP95Ms": 9.055,
+        "commitP99Ms": 62.2183,
+        "durationSeconds": 4.3366573,
         "failed": 0,
         "reconnects": 0,
-        "writerRatePerSecond": 50866.3,
-        "written": 8000
+        "writerRatePerSecond": 92236.9,
+        "written": 400000
       }
     }
   ],
   "schema": "streaming-polling-outbox/benchmark/v1",
-  "startedAt": "2026-10-17T21:16:31",
+  "startedAt": "2026-10-17T23:19:28",
   "totals": {
     "duplicatesTotal": 0,
     "kafkaErrors": 0,
-    "messagesDelivered": 16000,
+    "messagesDelivered": 525000,
     "readErrors": 0,
     "scenarios": 5,
     "verdictsPass": 5

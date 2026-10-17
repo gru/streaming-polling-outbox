@@ -154,7 +154,9 @@ writer_start() { curl -s -o /tmp/ha-start.json -w '%{http_code}' --max-time 10 \
   -X POST "$WBASE/api/generation/start" -H 'Content-Type: application/json' -d "$1"; }
 wait_writer_finished() { # итоговое состояние на stdout; большой таймаут — ретраи при отказах
   local s
-  for _ in $(seq 1 240); do
+  # 600×2с=20мин: benchmark-сценарии этапа 9 до 10 минут записи (30000@50/с);
+  # при отказах Writer ретраит дольше — потолок с запасом, для HA-тестов безвреден
+  for _ in $(seq 1 600); do
     s=$(curl -s --max-time 5 "$WBASE/api/generation/state" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])' 2>/dev/null)
     if [[ -n "$s" && "$s" != "running" && "$s" != "stopping" ]]; then echo "$s"; return 0; fi
     sleep 2
@@ -184,7 +186,9 @@ wait_run_unique() { # runId expected → unique на stdout
   echo "${u:-0}"
 }
 validate_run() { # runId fetchFromWriter → HTTP-код, вердикт в /tmp/ha-verdict.json
-  curl -s -o /tmp/ha-verdict.json -w '%{http_code}' --max-time 30 -X POST "$VBASE/api/validation/validate" \
+  # 120с: fetchFromWriter у больших прогонов тянет весь ids-набор с Writer
+  # (benchmark s5 1M сообщений ≈ 40МБ JSON) — 30с мало
+  curl -s -o /tmp/ha-verdict.json -w '%{http_code}' --max-time 120 -X POST "$VBASE/api/validation/validate" \
     -H 'Content-Type: application/json' -d "{\"runId\":\"$1\",\"fetchFromWriter\":$2}"
 }
 vd() { vfield /tmp/ha-verdict.json "$1"; }

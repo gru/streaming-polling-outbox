@@ -53,21 +53,23 @@ source scripts/test/ha-common.sh
 PASS=0; FAIL=0
 
 # ---------- Сценарии (ОДИНАКОВЫЕ параметры для обеих арм, §11) ----------
+# Постоянная нагрузка — минимум 5-10 минут (требование владельца, этап 9):
+# короткие прогоны не выходят на установившийся режим (GC/checkpoint/окна scrape).
 # Порядок фиксирован; warmup не входит в отчёт сценариев (JIT/пулы/прогрев валидатора).
 SCEN_NAMES=(s1-steady-50 s2-steady-200 s3-burst s4-large-4k s5-throughput)
 SCEN_DESCS=(
-  "равномерная низкая нагрузка 2000@50/s"
-  "равномерная высокая нагрузка 3000@200/s"
-  "короткий burst 2000 без rate-limit"
-  "крупные сообщения 1000@50/s x4096B"
-  "максимальная пропускная 8000 без rate-limit"
+  "равномерная низкая нагрузка 30000@50/s (~10 мин)"
+  "равномерная высокая нагрузка 60000@200/s (5 мин)"
+  "backlog-drain: burst 20000 без rate-limit (короткий по смыслу: скорость выборки)"
+  "крупные сообщения 15000@50/s x4096B (5 мин)"
+  "max throughput: backlog 400000 без rate-limit — Writer вываливает его за секунды (замерено 67-108k msg/s), CDC выбирает на пределе; узкое место — сам CDC по построению. Объём подобран под МЕДЛЕННУЮ арму: polling дрейнит большой backlog устойчиво ~0.9k msg/s (замер цикла A: 400k за 425с), streaming ~11k (400k за 31с) — 1M у polling занял бы ~18 мин и не влезал в бюджет ожидания; валидатор держит >=10k подтв/с (400k за 37с, цикл B)"
 )
 SCEN_SPECS=(
-  '{"totalMessages":2000,"ratePerSecond":50,"messageSizeBytes":256,"batchSize":50,"parallelism":4}'
-  '{"totalMessages":3000,"ratePerSecond":200,"messageSizeBytes":256,"batchSize":50,"parallelism":4}'
-  '{"totalMessages":2000,"messageSizeBytes":256,"batchSize":100,"parallelism":8}'
-  '{"totalMessages":1000,"ratePerSecond":50,"messageSizeBytes":4096,"batchSize":50,"parallelism":4}'
-  '{"totalMessages":8000,"messageSizeBytes":256,"batchSize":100,"parallelism":8}'
+  '{"totalMessages":30000,"ratePerSecond":50,"messageSizeBytes":256,"batchSize":50,"parallelism":4}'
+  '{"totalMessages":60000,"ratePerSecond":200,"messageSizeBytes":256,"batchSize":50,"parallelism":4}'
+  '{"totalMessages":20000,"messageSizeBytes":256,"batchSize":100,"parallelism":8}'
+  '{"totalMessages":15000,"ratePerSecond":50,"messageSizeBytes":4096,"batchSize":50,"parallelism":4}'
+  '{"totalMessages":400000,"messageSizeBytes":256,"batchSize":100,"parallelism":8}'
 )
 WARMUP_SPEC='{"totalMessages":500,"ratePerSecond":100,"messageSizeBytes":256,"batchSize":50,"parallelism":4}'
 
@@ -156,7 +158,7 @@ run_scenario() { # idx
   SCEN_WRITTEN="$written"
   ok "$name: written=$written, фактический rate=$(python3 -c "print(f'{$written / max($(writer_field 'd["durationSeconds"]'), 0.001):.0f}')") msg/s"
 
-  u=$(wait_run_unique_long "$run" "$written" 900)
+  u=$(wait_run_unique_long "$run" "$written" 1800)
   t2=$(now_ms)
   rm -f /tmp/bench-sampler-on; wait "$sampler_pid" 2>/dev/null
   [[ "$u" == "$written" ]] \

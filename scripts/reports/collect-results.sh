@@ -42,7 +42,7 @@ done
 
 # --- артефакты прогона: Writer -----------------------------------------------
 curl -s --max-time 8 "$WBASE/api/generation/results" -o /tmp/cr-writer-results.json
-curl -s --max-time 8 "$WBASE/api/generation/results/ids" -o /tmp/cr-writer-ids.json
+curl -s --max-time 90 "$WBASE/api/generation/results/ids" -o /tmp/cr-writer-ids.json  # 90с: ids-набор 1M-прогонов ~40МБ
 curl -s --max-time 8 "$WBASE/api/generation/state" -o /tmp/cr-writer-state.json
 for f in /tmp/cr-writer-results.json /tmp/cr-writer-ids.json; do
   if ! python3 -c "import json; json.load(open('$f'))" 2>/dev/null; then

@@ -1,178 +1,98 @@
 {
-  "resources": {
-    "polling": {
-      "cdc": {
-        "cpuAvgPercent": 2.2,
-        "cpuMaxPercent": 13.4,
-        "memAvgBytes": 136285806,
-        "memMaxBytes": 170288742,
-        "slices": 22
-      },
-      "kafka": {
-        "cpuAvgPercent": 21.9,
-        "cpuMaxPercent": 56.5,
-        "memAvgBytes": 1151589059,
-        "memMaxBytes": 1286078464,
-        "slices": 22
-      },
-      "postgresql": {
-        "cpuAvgPercent": 5.3,
-        "cpuMaxPercent": 17.6,
-        "memAvgBytes": 290592343,
-        "memMaxBytes": 313262079,
-        "slices": 22
-      },
-      "window": {
-        "fromMs": 1792260787799,
-        "toMs": 1792260956648
-      },
-      "writer": {
-        "cpuAvgPercent": 2.2,
-        "cpuMaxPercent": 19.4,
-        "memAvgBytes": 80901928,
-        "memMaxBytes": 148373504,
-        "slices": 22
-      }
-    },
-    "streaming": {
-      "cdc": {
-        "cpuAvgPercent": 3.5,
-        "cpuMaxPercent": 28.4,
-        "memAvgBytes": 139841908,
-        "memMaxBytes": 186122240,
-        "slices": 22
-      },
-      "kafka": {
-        "cpuAvgPercent": 30.7,
-        "cpuMaxPercent": 182.5,
-        "memAvgBytes": 1132495444,
-        "memMaxBytes": 1265211802,
-        "slices": 22
-      },
-      "postgresql": {
-        "cpuAvgPercent": 4.2,
-        "cpuMaxPercent": 23.2,
-        "memAvgBytes": 293086048,
-        "memMaxBytes": 316344893,
-        "slices": 22
-      },
-      "window": {
-        "fromMs": 1792261035356,
-        "toMs": 1792261203346
-      },
-      "writer": {
-        "cpuAvgPercent": 1.1,
-        "cpuMaxPercent": 5.0,
-        "memAvgBytes": 83737850,
-        "memMaxBytes": 150156083,
-        "slices": 22
-      }
-    }
-  },
   "scenarios": [
     {
       "polling": {
-        "cdcRateOverall": 49.0,
-        "cdcRatePeak": 95.8,
-        "deliveryTotalMs": 40783,
-        "drainMs": 106,
+        "cdcRateAvg": 50.1,
+        "cdcRatePeak": 96.0,
+        "deliveryTotalMs": 599763,
+        "drainMs": 104,
         "duplicates": 0,
-        "e2eMeanMs": 301.8,
-        "e2eP95Ms": 1028.9841
+        "e2eP95Ms": 503.6906
       },
       "scenario": "s1-steady-50",
       "streaming": {
-        "cdcRateOverall": 49.0,
-        "cdcRatePeak": 142.0,
-        "deliveryTotalMs": 40831,
-        "drainMs": 106,
+        "cdcRateAvg": 50.0,
+        "cdcRatePeak": 141.6,
+        "deliveryTotalMs": 599399,
+        "drainMs": 97,
         "duplicates": 0,
-        "e2eMeanMs": 20.3,
-        "e2eP95Ms": 753.9218
+        "e2eP95Ms": 24.17
       }
     },
     {
       "polling": {
-        "cdcRateOverall": 181.5,
-        "cdcRatePeak": 240.6,
-        "deliveryTotalMs": 16532,
-        "drainMs": 153,
+        "cdcRateAvg": 200.1,
+        "cdcRatePeak": 241.3,
+        "deliveryTotalMs": 300907,
+        "drainMs": 1139,
         "duplicates": 0,
-        "e2eMeanMs": 269.0,
-        "e2eP95Ms": 501.2612
+        "e2eP95Ms": 483.2282
       },
       "scenario": "s2-steady-200",
       "streaming": {
-        "cdcRateOverall": 181.8,
-        "cdcRatePeak": 284.9,
-        "deliveryTotalMs": 16500,
-        "drainMs": 152,
+        "cdcRateAvg": 199.7,
+        "cdcRatePeak": 278.8,
+        "deliveryTotalMs": 300025,
+        "drainMs": 111,
         "duplicates": 0,
-        "e2eMeanMs": 16.7,
-        "e2eP95Ms": 25.1381
+        "e2eP95Ms": 20.1998
       }
     },
     {
       "polling": {
-        "cdcRateOverall": 898.9,
-        "cdcRatePeak": 1910.2,
-        "deliveryTotalMs": 2225,
-        "drainMs": 113,
+        "cdcRateAvg": 4588.6,
+        "cdcRatePeak": 6089.4,
+        "deliveryTotalMs": 4262,
+        "drainMs": 2147,
         "duplicates": 0,
-        "e2eMeanMs": 287.1,
-        "e2eP95Ms": 468.9442
+        "e2eP95Ms": 3414.4231
       },
       "scenario": "s3-burst",
       "streaming": {
-        "cdcRateOverall": 900.9,
-        "cdcRatePeak": 1899.3,
-        "deliveryTotalMs": 2220,
-        "drainMs": 104,
+        "cdcRateAvg": 10219.7,
+        "cdcRatePeak": 10219.7,
+        "deliveryTotalMs": 2222,
+        "drainMs": 107,
         "duplicates": 0,
-        "e2eMeanMs": null,
-        "e2eP95Ms": 185.0541
+        "e2eP95Ms": 1575.8313
       }
     },
     {
       "polling": {
-        "cdcRateOverall": 48.8,
-        "cdcRatePeak": 95.3,
-        "deliveryTotalMs": 20499,
-        "drainMs": 101,
+        "cdcRateAvg": 50.0,
+        "cdcRatePeak": 95.2,
+        "deliveryTotalMs": 299360,
+        "drainMs": 98,
         "duplicates": 0,
-        "e2eMeanMs": 273.6,
-        "e2eP95Ms": 475.6736
+        "e2eP95Ms": 529.8776
       },
       "scenario": "s4-large-4k",
       "streaming": {
-        "cdcRateOverall": 48.8,
-        "cdcRatePeak": 95.4,
-        "deliveryTotalMs": 20496,
+        "cdcRateAvg": 50.0,
+        "cdcRatePeak": 95.9,
+        "deliveryTotalMs": 300233,
         "drainMs": 103,
         "duplicates": 0,
-        "e2eMeanMs": 24.4,
-        "e2eP95Ms": 185.0541
+        "e2eP95Ms": 41.4246
       }
     },
     {
       "polling": {
-        "cdcRateOverall": 3624.8,
-        "cdcRatePeak": 4493.3,
-        "deliveryTotalMs": 2207,
-        "drainMs": 99,
+        "cdcRateAvg": 926.0,
+        "cdcRatePeak": 5318.1,
+        "deliveryTotalMs": 429557,
+        "drainMs": 425424,
         "duplicates": 0,
-        "e2eMeanMs": 557.5,
-        "e2eP95Ms": 1484.2765
+        "e2eP95Ms": 425188.3626
       },
       "scenario": "s5-throughput",
       "streaming": {
-        "cdcRateOverall": 3618.3,
-        "cdcRatePeak": 7604.6,
-        "deliveryTotalMs": 2211,
-        "drainMs": 99,
+        "cdcRateAvg": 10932.9,
+        "cdcRatePeak": 12696.1,
+        "deliveryTotalMs": 37263,
+        "drainMs": 31060,
         "duplicates": 0,
-        "e2eMeanMs": 433.5,
-        "e2eP95Ms": 745.278
+        "e2eP95Ms": 32398.5955
       }
     }
   ],
