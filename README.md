@@ -394,6 +394,48 @@ WAL Pressure Test (§12.2) исключён решением владельца 
 - Каждый тест завершается `reconcile`: apply-bootstrap (02-slot/03-reconcile),
   рестарт CDC при `error_slot`, ожидание synced-копии, canary-прогон.
 
+## Benchmark-циклы A/B (этап 9, requirements.md §11)
+
+Изолированное сравнение арм: цикл A (polling) и цикл B (streaming) на
+**полностью пересозданном** стенде (`wipe.sh` → `up -d --build` под нужным
+профилем), одинаковые сценарии нагрузки, warmup-прогон вне отчёта (JIT, пулы,
+прогрев валидатора). После цикла A стенд вытирается (§11 шаг 7), после
+цикла B остаётся поднятым (arm streaming).
+
+```bash
+./scripts/test/benchmark.sh --cycle all     # A(polling) → wipe → B(streaming) + сводка
+./scripts/test/benchmark.sh --cycle polling # только цикл A (завершается wipe)
+./scripts/test/benchmark.sh --cycle streaming --only s1,s5   # подмножество сценариев
+```
+
+| Сценарий | Нагрузка | Что измеряет |
+|---|---|---|
+| s1-steady-50 | 2000@50/с, 256Б | латентность при равномерном потоке (e2e p50/p95/p99) |
+| s2-steady-200 | 3000@200/с, 256Б | поведение при 4-кратном ускорении потока |
+| s3-burst | 2000 без rate-limit | реакция на всплеск: drain, дубликаты, пик скорости CDC |
+| s4-large-4k | 1000@50/с, 4096Б | декодинг/публикация крупных тел |
+| s5-throughput | 8000 без rate-limit | максимальная пропускная способность конвейера |
+
+Метрики на сценарий (§13.4 — точные значения из фактических данных, не scrape):
+Writer (длительность, фактический msg/s, p50/p95/p99 commit и batch), полный
+цикл доставки `deliveryTotalMs` и `drainMs` (Writer finished → всё подтверждено
+валидатором), скорость CDC по сэмплам 1с (avg/peak msg/s), e2e-латентность CDC
+(rolling-процентили + точный средний за сценарий по дельтам гистограммы
+Prometheus), дельты счётчиков (errors/retries/reconnects), вердикт валидатора
+(missing=0, unexpected=0 обязательны; дубликаты считаются), CPU/RAM по ролям
+(cdc/postgresql/kafka) из docker-stats. Итог цикла — `benchmark-report.json`.
+
+Артефакты: `results/raw/<stamp>-benchmark-<arm>/` (полные: отчёт, docker-stats,
+runs/ с result.json+timeseries.csv+validation-verdict.json, cdc-samples/),
+компактные копии для сравнения — `results/benchmark/benchmark-{polling,streaming}.json`
+и `results/benchmark/summary.json` (коммитятся). Методология и ограничения —
+deviations §10.
+
+Важно: `wipe.sh` опускает ОБА профиля CDC (`--profile polling --profile
+streaming down -v`) — без профилей compose не трогает сервисы с профилем,
+контейнер CDC переживает wipe и после нового up занимает слот нового кластера
+(грабли этапа 9).
+
 ## Полезные команды
 
 Пароли в примерах (`postgres`, `writer_secret`, …) — значения по умолчанию
@@ -494,19 +536,23 @@ scripts/
   test/smoke-cdc-polling.sh     — живая проверка CDC Polling (доставка/LSN/метрики/рестарт/batch size)
   test/smoke-cdc-streaming.sh   — живая проверка CDC Streaming (доставка/feedback/метрики/рестарт/batch size)
   test/integration-delivery.sh  — integration-тесты этапа 7: запись/чтение/доставка/количество/дубликаты (§15)
+  test/ha-common.sh             — разделяемая библиотека HA-харнессов этапа 8 (source, не запускается)
+  test/ha-suite.sh              — HA-тесты TEST-HA-001..008 для обеих арм (§14)
+  test/benchmark.sh             — benchmark-циклы A/B этапа 9 (§11): wipe → сценарии → отчёты
   init/apply-bootstrap.sh       — повторный запуск инициализации БД
-  reset/wipe.sh                 — полный сброс (down -v)
+  reset/wipe.sh                 — полный сброс (down -v, ОБА профиля CDC — иначе армы переживают wipe)
   reports/collect-results.sh    — сбор результатов теста: result.json + timeseries.csv (§13.4)
   reports/sample-docker-stats.sh — сэмплер per-container CPU/RAM (docker stats → CSV)
 results/raw/                    — артефакты прогонов (gitignored)
+results/benchmark/              — компактные benchmark-отчёты A/B + summary.json (коммитятся)
 docs/
   deviations.md                 — отклонения от ТЗ и их причины
 ```
 
 ## Что дальше (по плану requirements.md)
 
-Далее: benchmark-циклы A/B (полный wipe между ними, requirements.md 11) и
-сравнительный отчёт. HA-тесты TEST-HA-001..008 выполнены (этап 8,
-`scripts/test/ha-suite.sh`); WAL Pressure Test исключён решением владельца
-(deviations §9п). Отложено владельцем на поздний этап: Schema Registry +
+Далее: сравнительный отчёт (этап 10) — сводные таблицы/выводы по данным
+`results/benchmark/` (этапы 1–9 выполнены: benchmark-циклы A/B —
+`scripts/test/benchmark.sh`, WAL Pressure Test исключён решением владельца,
+deviations §9п). Отложено владельцем на поздний этап: Schema Registry +
 Avro-тело сообщения (сейчас body — JSON `jsonb`).
