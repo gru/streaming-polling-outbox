@@ -11,7 +11,9 @@
 
 ## Текущее состояние
 
-**Этап 1 (инфраструктура) выполнен и проверен** (`scripts/check-infra.sh` — все проверки зелёные): Patroni 4.1.5 + PostgreSQL 17.2 ×3 (синхронная репликация, failover-слот синхронизируется), etcd ×3, HAProxy, PgBouncer, Kafka KRaft 3.9.0 ×3 (topic `outbox.events`), Prometheus, идемпотентная инициализация (роли, outbox-таблица `public.outbox_messages` в publication, pgoutput-слот). .NET-сервисов (Writer, CDC) ещё нет — это этапы 3+; полная целевая структура репозитория в `requirements.md` раздел 18.
+**Этапы 1-2 (инфраструктура) выполнены и проверены** (`scripts/check-infra.sh` — все проверки зелёные): Patroni 4.1.5 + PostgreSQL 17.2 ×3 (синхронная репликация, failover-слот синхронизируется), etcd ×3, HAProxy, PgBouncer, Kafka KRaft 3.9.0 ×3 (topic `outbox.events`), Prometheus, идемпотентная инициализация (роли, outbox-таблица `public.outbox_messages` в publication, pgoutput-слот).
+
+**Этап 3 (Writer) выполнен и проверен** (`scripts/test/smoke-writer.sh` — 24/24, `tests/Writer.UnitTests` — 27/27): ASP.NET Core 8 `src/Writer`, INSERT-батчи от `sys_writer` (PgBouncer по умолчанию / direct через HAProxy), управление HTTP API `:18080` (`/api/generation/start|stop|state|results|results/ids`, `/health`, `/ready`, `/metrics` OTel), старт/рестарт в Idle, неоднозначный commit разрешается идемпотентным ретраем (PK-conflict = прошлый commit прошёл). Полная целевая структура репозитория — `requirements.md` раздел 18. Отложено владельцем на поздний этап: Schema Registry + Avro-тело (сейчас body — JSON). Далее: этапы 4+ (CDC Polling/Streaming).
 
 ## Критические жёсткие ограничения (requirements.md, раздел 2)
 
@@ -42,6 +44,7 @@
 - После рестарта стенда на репликах остаются несинхронизированные остатки слота (slotsync worker падает с "same name slot exists") — их роняет 03-slot-reconcile.sql из init-db.
 - `synchronized_standby_slots` принимает только ФИЗИЧЕСКИЕ слоты; пишется через ALTER SYSTEM локально — после смены primary перезапустить apply-bootstrap.sh.
 - PgBouncer: userlist с plaintext-паролями генерируется init-db из .env (SCRAM pass-through с верификаторами из pg_authid на этой сборке не работает); хост-порт HAProxy 5432 (занявший его раньше airo-postgres остановлен вручную, policy unless-stopped).
+- **Writer (этап 3)**: UUID (v7, свой `MessageFactory.CreateUuidV7` — `Guid.CreateVersion7` только в .NET 9; поля Guid-span little-endian, version-нибл в байте 7) и `created_at` задаёт клиент — у `sys_writer` только INSERT, `RETURNING` требует SELECT. Один батч = один multi-row INSERT в одной транзакции; ретрай тех же UUID после сбоя: `unique_violation` по PK на повторе = «прошлый commit прошёл» (так разрешается неоднозначный commit 6.3, дублей в outbox нет). У источника PgBouncer `No Reset On Close=true`. Мягкий stop прерывает только ожидание между ретраями — начавшийся commit доигрывается; жёсткая отмена (shutdown хоста) оставляет батч «неоднозначным». Сборка/тесты .NET — в контейнере `mcr.microsoft.com/dotnet/sdk:8.0` (локальный dotnet — 10-й); хост-порт Writer 18080 (8080 занят контейнером airo-host другого проекта).
 
 ## Роли PostgreSQL
 

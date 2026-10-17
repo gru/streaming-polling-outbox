@@ -20,9 +20,11 @@ scrape_configs:
           - etcd2:2379
           - etcd3:2379
 
-  # Placeholder'ы для будущих сервисов (этап 3+):
-  # - job_name: writer
-  #   static_configs: [{ targets: ['writer:8080'] }]
+  - job_name: writer
+    static_configs:
+      - targets: ['writer:8080']
+
+  # Placeholder'ы для будущих CDC-сервисов (этапы 4-5):
   # - job_name: cdc-polling
   #   static_configs: [{ targets: ['cdc-polling:8080'] }]
   # - job_name: cdc-streaming

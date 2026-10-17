@@ -386,6 +386,43 @@ services:
       kafka2: {condition: service_healthy}
       kafka3: {condition: service_healthy}
 
+  # ---------- Writer (этап 3) ----------
+
+  # Управляемый генератор нагрузки: INSERT-батчи в public.outbox_messages от
+  # sys_writer. НЕ зависит от Kafka (requirements.md 6.2: запись продолжается
+  # при полной недоступности Kafka) — depends_on закрывает только путь записи.
+  # Хост-порт 18080: 8080 на этой машине занят контейнером другого проекта.
+  writer:
+    build: ./src/Writer
+    image: streaming-polling-outbox/writer:net8.0
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      WRITER__CONNECTION__MODE: ${WRITER_CONNECTION_MODE:-pgbouncer}
+      WRITER__CONNECTION__PGBOUNCER__HOST: pgbouncer
+      WRITER__CONNECTION__PGBOUNCER__PORT: "6432"
+      WRITER__CONNECTION__DIRECT__HOST: haproxy
+      WRITER__CONNECTION__DIRECT__PORT: "5432"
+      WRITER__CONNECTION__DATABASE__NAME: postgres
+      WRITER__CONNECTION__DATABASE__USERNAME: sys_writer
+      WRITER__CONNECTION__DATABASE__PASSWORD: ${SYS_WRITER_PASSWORD:?set in .env}
+      WRITER__DEFAULTS__MESSAGESIZEBYTES: "1024"
+      WRITER__DEFAULTS__PARALLELISM: "4"
+      WRITER__DEFAULTS__BATCHSIZE: "100"
+    networks: [outbox-net]
+    ports:
+      - "${WRITER_HTTP_PORT:-18080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      haproxy: {condition: service_healthy}
+      pgbouncer: {condition: service_healthy}
+
   # ---------- Prometheus ----------
 
   prometheus:
