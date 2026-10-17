@@ -20,10 +20,11 @@ ok()  { PASS=$((PASS+1)); printf '  \033[32m✔\033[0m %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  \033[31m✘\033[0m %s\n' "$1"; }
 section() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 
-# psql к актуальному primary (через HAProxy) из контейнера pg1
+# psql к актуальному primary (через HAProxy) из контейнера pg1.
+# Прикладная БД — outbox (слот и таблица живут в ней).
 psql_primary() {
   $DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 \
-    psql -h haproxy -U postgres -d postgres -v ON_ERROR_STOP=1 "$@"
+    psql -h haproxy -U postgres -d outbox -v ON_ERROR_STOP=1 "$@"
 }
 
 api() { # method path [json-body] → код HTTP

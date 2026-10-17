@@ -13,8 +13,13 @@ slot (SELECT-polling таблицы не используется). Причин
 Состав инфраструктуры (этапы 1-2, готовы):
 
 - **Patroni + PostgreSQL 17.2**, 3 ноды, синхронная репликация; DCS — etcd 3 ноды
+- **Прикладная БД `outbox`** (не `postgres` — реальная конфигурация приложения; отдельной
+  БД требует и failover-синхронизация слота: PG17 slotsync worker синхронизирует слоты
+  только БД из `dbname` в `primary_conninfo`; Patroni настроен официальной опцией
+  `postgresql.database: outbox` + кастомный bootstrap-метод, патчей Patroni нет)
 - **Нативная синхронизация failover logical slots** PostgreSQL 17 (`sync_replication_slots`,
-  слот `outbox_slot`, плагин `pgoutput`, `failover=true`, `synced=true` на standby)
+  слот `outbox_slot`, плагин `pgoutput`, `failover=true`, `synced=true` на standby;
+  пережил контролируемый switchover с сохранением restart_lsn)
 - **Outbox-таблица `public.outbox_messages`** (id/topic/body/created_at) в publication
   `outbox_publication`; CHECK на `topic='outbox.events'` — произвольная маршрутизация запрещена
 - **HAProxy** (маршрутизация на primary, stats :8404) + **PgBouncer** (transaction pool)
@@ -107,26 +112,26 @@ Unit-тесты: `docker run --rm -v "$PWD":/w -w /w mcr.microsoft.com/dotnet/sd
 # Состояние Patroni-кластера (кто leader / sync_standby)
 curl -s localhost:8008/cluster | python3 -m json.tool
 
-# PostgreSQL через PgBouncer под прикладной ролью
+# PostgreSQL через PgBouncer под прикладной ролью (прикладная БД — outbox)
 docker compose exec -e PGPASSWORD=writer_secret pg1 \
-  psql "host=pgbouncer port=6432 user=sys_writer dbname=postgres"
+  psql "host=pgbouncer port=6432 user=sys_writer dbname=outbox"
 
 # Записать сообщение в outbox руками тем же паттерном, что Writer
 # (INSERT+DELETE в одной транзакции: таблица остаётся пустой, изменение уходит в WAL;
 # без RETURNING — оно требует SELECT-привилегию, у sys_writer только колоночный SELECT(id))
-docker compose exec -e PGPASSWORD=writer_secret pg1 psql "host=pgbouncer port=6432 user=sys_writer dbname=postgres" -c "
+docker compose exec -e PGPASSWORD=writer_secret pg1 psql "host=pgbouncer port=6432 user=sys_writer dbname=outbox" -c "
 BEGIN;
 INSERT INTO public.outbox_messages (id, topic, body) VALUES ('00000000-0000-7000-8000-000000000c0d', 'outbox.events', '{\"eventType\":\"TestEvent\"}');
 DELETE FROM public.outbox_messages WHERE id = '00000000-0000-7000-8000-000000000c0d';
 COMMIT;"
 
 # Посмотреть содержимое слота, не потребляя (бинарный pgoutput: B/R/I/C записи)
-docker compose exec -e PGPASSWORD=postgres pg1 psql -h localhost -U postgres -d postgres \
+docker compose exec -e PGPASSWORD=postgres pg1 psql -h localhost -U postgres -d outbox \
   -c "SELECT lsn, xid FROM pg_logical_slot_peek_binary_changes('outbox_slot', NULL, 20, 'proto_version','1','publication_names','outbox_publication')"
 
 # Состояние слотов на всех нодах (failover sync)
 for n in pg1 pg2 pg3; do docker compose exec -e PGPASSWORD=postgres $n \
-  psql -h localhost -U postgres -d postgres -Atc \
+  psql -h localhost -U postgres -d outbox -Atc \
   "SELECT '$n '||plugin||' synced='||synced FROM pg_replication_slots WHERE slot_name='outbox_slot'"; done
 
 # Kafka: описание topic

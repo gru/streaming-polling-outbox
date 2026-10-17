@@ -17,6 +17,8 @@ ENV PGDATA=/var/lib/postgresql/data
 RUN install -d -m 700 -o postgres -g postgres /var/lib/postgresql/data
 
 COPY patroni.yml /etc/patroni.yml
+COPY bootstrap-with-appdb.sh /usr/local/bin/bootstrap-with-appdb.sh
+RUN chmod 755 /usr/local/bin/bootstrap-with-appdb.sh
 
 USER postgres
 EXPOSE 5432 8008

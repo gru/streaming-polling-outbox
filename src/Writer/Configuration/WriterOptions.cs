@@ -32,7 +32,8 @@ public sealed class EndpointOptions
 
 public sealed class DatabaseOptions
 {
-    public string Name { get; set; } = "postgres";
+    /// <summary>Прикладная БД стенда (слот и outbox-таблица живут в ней).</summary>
+    public string Name { get; set; } = "outbox";
     public string Username { get; set; } = "sys_writer";
     public string Password { get; set; } = "";
 }

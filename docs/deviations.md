@@ -59,20 +59,53 @@ logical replication через слот (peek + advance против Npgsql-ст
   команды DELETE; SELECT всей таблицы (body и пр.) не выдаётся.
 - Слот `outbox_slot`: плагин `pgoutput`, `failover=true`.
 
-## 2. Прикладная БД — `postgres` вместо отдельной `outbox`
+## 2. Прикладная БД — отдельная `outbox` (не `postgres`)
 
-**Пункт ТЗ:** «одна прикладная база данных» (раздел 3.1); первоначальный план —
-отдельная БД `outbox`.
+**Пункт ТЗ:** «одна прикладная база данных» (раздел 3.1). Требование выполняется
+буквально — прикладная БД ровно одна.
 
-**Факт:** в PostgreSQL 17 slotsync worker синхронизирует failover logical-слоты
-только той БД, которая указана в `primary_conninfo` (dbname). Patroni формирует
-`primary_conninfo` от своей maintenance-БД (`postgres`) и не позволяет изменить
-dbname, не переведя сам Patroni на другую БД (`postgresql.database`) — что
-ломает первый bootstrap (БД ещё не существует).
+**История (оба решения владельца):**
 
-**Решение:** единственная прикладная БД стенда — `postgres`. Outbox-таблица,
-publication и слот живут в ней; синхронизация слота на standby проверена
-(synced=true). Требование «одна прикладная база данных» выполняется буквально.
+1. Первоначально прикладной БД был `postgres`: PG17 slotsync worker синхронизирует
+   failover-слоты только БД, указанной в `dbname` параметра `primary_conninfo`
+   на стендбае, а Patroni пишет туда свою maintenance-БД (по умолчанию
+   `postgres`). «В лоб» вариант `postgresql.database: outbox` ломал первый
+   bootstrap: эта же опция направляет собственные SQL-подключения Patroni
+   (создание ролей, слоты, CHECKPOINT) в outbox, которой после initdb ещё нет.
+2. **Решение владельца (2026-10-17): прикладная БД — отдельная `outbox`, не
+   `postgres`.** Мотивация: реальное приложение живёт в собственной БД (и БД с
+   слотами может быть несколько); стенд обязан проверять реальную конфигурацию,
+   а не дефолтную maintenance-БД. Патчи Patroni владельцем запрещены.
+
+**Реализация на стоковом Patroni 4.1.5 (без патчей, только официальные фичи):**
+
+- `postgresql.database: outbox` (patroni.yml) — официальная опция Patroni: задаёт dbname
+  в `primary_conninfo` реплик (под неё работает PG17 slotsync) и БД собственных
+  подключений Patroni;
+- кастомный bootstrap-метод `bootstrap-with-appdb`
+  (infrastructure/patroni/bootstrap-with-appdb.sh): initdb (UTF8/C.UTF-8/
+  data-checksums — прежние флаги) → временный инстанс только на unix-сокете →
+  `CREATE DATABASE outbox` → чистый shutdown. БД существует в PGDATA до первого
+  SQL Patroni — тупик bootstrap снят. Реплики получают БД через pg_basebackup.
+
+**Проверено на стенде:** `primary_conninfo` обоих стендбаев содержит
+`dbname=outbox`; слот `outbox_slot` в БД `outbox` — `synced=true`,
+`wal_status=reserved` на обоих стендбаях; двойной switchover (pg3→pg2→pg1):
+слот пережил promotion с сохранением restart_lsn, peek работает на новом
+leader, стендбаи пересинхронизируют слот; check-infra 42/42, smoke-writer 26/26.
+
+**Выявленное ограничение PG17 (важно для этапов 4–5):** непотребляемый слот
+(CDC ещё не читает и не подтверждает LSN) со временем перестаёт
+синхронизироваться: воркер пишет `could not synchronize replication slot ...
+remote slot precedes local slot` (catalog_xmin стендбая обогнал слот), и при
+promotion такой слот НЕ сохраняется — «the slot will not be persisted to avoid
+data loss» ([docs §47.2.3](https://www.postgresql.org/docs/17/logicaldecoding-explanation.html)).
+Это документированное поведение, не баг. Лекарство из документации — продвигать
+слот (consume/`pg_logical_slot_get_binary_changes`); в реальном benchmark CDC
+делает это непрерывно после Kafka delivery, поэтому условие не возникает. До
+появления CDC: перед failover-экспериментами продвигать слот вручную; после
+demotion старый leader держит несинхронизированный остаток слота — убирается
+`scripts/init/apply-bootstrap.sh` (03-slot-reconcile.sql).
 
 ## 3. Прочее (некритическое)
 

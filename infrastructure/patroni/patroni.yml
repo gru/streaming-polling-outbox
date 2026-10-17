@@ -36,6 +36,16 @@ postgresql:
       username: postgres
       password: postgres  # переопределяется: PATRONI_POSTGRESQL_AUTHENTICATION_REPLICATION_PASSWORD
 
+  # Прикладная БД кластера — outbox, а не postgres (решение владельца,
+  # docs/deviations.md). Официальная опция Patroni влияет на две вещи:
+  # 1) dbname в primary_conninfo на репликах: PG17 slotsync worker синхронизирует
+  #    failover-слоты ТОЛЬКО БД из dbname primary_conninfo — без этого слот outbox_slot
+  #    не получил бы synced-копий на стендбаях и терялся бы при failover;
+  # 2) собственные SQL-подключения Patroni (pg_isready, роли, physical slots).
+  # Поэтому БД обязана существовать ДО старта Patroni — её создаёт кастомный
+  # bootstrap-метод bootstrap-with-appdb (см. bootstrap: ниже). Патчей Patroni нет.
+  database: outbox
+
   parameters:
     unix_socket_directories: /var/run/postgresql
     log_min_messages: warning
@@ -56,7 +66,13 @@ watchdog:
   mode: off  # в контейнере нет доступа к /dev/watchdog
 
 bootstrap:
-  method: initdb
+  # Кастомный bootstrap: initdb (UTF8 / C.UTF-8 / data-checksums — прежние флаги)
+  # + CREATE DATABASE outbox до первого запуска Patroni (см. postgresql.database
+  # выше). Выполняется только на ноде, инициализирующей кластер; реплики получают
+  # БД через pg_basebackup.
+  method: bootstrap-with-appdb
+  bootstrap-with-appdb:
+    command: /usr/local/bin/bootstrap-with-appdb.sh
   dcs:
     ttl: 30
     loop_wait: 5
@@ -86,7 +102,3 @@ bootstrap:
         # Без ограничения удержания WAL в нормальном режиме (requirements.md 12.1;
         # лимит для WAL Pressure Test применяется отдельно).
         max_slot_wal_keep_size: -1
-  initdb:
-    - encoding: UTF8
-    - locale: C.UTF-8
-    - data-checksums

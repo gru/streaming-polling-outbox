@@ -8,6 +8,8 @@
 -- При старте с чистого листа (wipe: down -v, свежие тома — как в тестовых
 -- циклах A/B) проблемы нет: остатков не существует, этот скрипт — no-op.
 -- На primary (pg_is_in_recovery()=false) ничего не делаем: там авторитетный слот.
+-- pg_replication_slots — общий каталог кластера: скрипт работает из любой БД
+-- (запускается подключённым к postgres).
 
 SELECT format('SELECT pg_drop_replication_slot(%L)', slot_name)
 FROM pg_replication_slots

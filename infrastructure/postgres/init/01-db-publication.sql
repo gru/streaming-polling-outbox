@@ -1,5 +1,6 @@
--- Прикладная схема: outbox-таблица и publication (requirements.md 4.2-4.3).
--- Идемпотентно. Выполняется от имени postgres на primary (через HAProxy).
+-- Прикладная БД outbox, схема и publication (requirements.md 4.2-4.3).
+-- Идемпотентно. Выполняется от имени postgres на primary (через HAProxy),
+-- стартует подключённым к postgres, дальше переключается на outbox.
 --
 -- ОТКЛОНЕНИЕ ОТ ТЗ (см. docs/deviations.md, раздел 1): используется ФИЗИЧЕСКАЯ
 -- outbox-таблица. Причина: pgoutput не передаёт logical messages ни в одной
@@ -9,12 +10,22 @@
 -- через logical slot с pgoutput (peek/advance против стриминга).
 -- Доставка остаётся logical replication-ом: SELECT-polling таблицы запрещён.
 --
--- Прикладная БД — `postgres` (см. там же, раздел 2): PG17 slotsync worker
--- синхронизирует слоты только БД из primary_conninfo.
+-- Прикладная БД — отдельная `outbox`, а не postgres (решение владельца, там же):
+-- реальное приложение живёт в своей БД; слот создаётся в ней же. На холодном
+-- старте БД уже создаёт bootstrap-метод Patroni (bootstrap-with-appdb.sh);
+-- CREATE DATABASE ниже идемпотентен и покрывает повторные прогоны bootstrap
+-- на существующем кластере (CREATE DATABASE вне транзакции — psql \gexec).
+
+SELECT 'CREATE DATABASE outbox' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'outbox') \gexec
+
+-- postgres остаётся сервисной БД кластера: прикладным ролям там делать нечего.
+REVOKE ALL ON DATABASE postgres FROM PUBLIC;
+
+\connect outbox
 
 -- Outbox-таблица. Строка = сообщение формата requirements.md 4.2:
 -- id/topic/body/timestamp. Таблица сознательно минимальна (PK без лишних
--- индексов) — лишние индексы увеличивают объём WAL на INSERT и исказят benchmark.
+-- индексов) — лишние индексы увеличивают объём WAL на INSERT и искажают benchmark.
 -- CHECK на topic реализует требование «поле topic не должно позволять
 -- произвольную маршрутизацию» (единственный прикладной topic — outbox.events).
 CREATE TABLE IF NOT EXISTS public.outbox_messages (
@@ -35,10 +46,10 @@ WHERE NOT EXISTS (
 ) \gexec
 
 -- Отзыв избыточных прав PUBLIC, затем явные минимальные GRANT (requirements.md 5.1).
-REVOKE ALL ON DATABASE postgres FROM PUBLIC;
-GRANT CONNECT ON DATABASE postgres TO sys_writer;      -- INSERT в outbox_messages
-GRANT CONNECT ON DATABASE postgres TO sys_app;         -- вызов SECURITY DEFINER-функций polling
-GRANT CONNECT ON DATABASE postgres TO sys_replication; -- streaming replication протокол
+REVOKE ALL ON DATABASE outbox FROM PUBLIC;
+GRANT CONNECT ON DATABASE outbox TO sys_writer;      -- INSERT в outbox_messages
+GRANT CONNECT ON DATABASE outbox TO sys_app;         -- вызов SECURITY DEFINER-функций polling
+GRANT CONNECT ON DATABASE outbox TO sys_replication; -- streaming replication протокол
 
 -- Схема public: запись в таблицу требует USAGE; CREATE не выдаём никому.
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;

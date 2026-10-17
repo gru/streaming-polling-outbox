@@ -16,21 +16,22 @@ ok()  { PASS=$((PASS+1)); printf '  \033[32m✔\033[0m %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  \033[31m✘\033[0m %s\n' "$1"; }
 section() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 
-# psql к актуальному primary (через HAProxy) из контейнера pg1
+# psql к актуальному primary (через HAProxy) из контейнера pg1.
+# Прикладная БД стенда — outbox (слот, publication, таблица живут в ней).
 psql_primary() {
   $DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 \
-    psql -h haproxy -U postgres -d postgres -v ON_ERROR_STOP=1 "$@"
+    psql -h haproxy -U postgres -d outbox -v ON_ERROR_STOP=1 "$@"
 }
 # psql локально к конкретной ноде (работает и на replica)
 psql_node() {
   local node=$1; shift
   $DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" "$node" \
-    psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 "$@"
+    psql -h localhost -U postgres -d outbox -v ON_ERROR_STOP=1 "$@"
 }
-# psql через PgBouncer от имени прикладного пользователя
+# psql через PgBouncer от имени прикладного пользователя (маппится только outbox)
 psql_bouncer() {
   local user=$1 pw=$2; shift 2
-  $DC exec -T -e PGPASSWORD="$pw" pg1 psql -h pgbouncer -p 6432 -U "$user" -d postgres -v ON_ERROR_STOP=1 "$@"
+  $DC exec -T -e PGPASSWORD="$pw" pg1 psql -h pgbouncer -p 6432 -U "$user" -d outbox -v ON_ERROR_STOP=1 "$@"
 }
 
 section "Compose config"
@@ -67,7 +68,7 @@ echo "  $patroni_result"
 [[ "$patroni_result" == *"sync_standby=1" || "$patroni_result" == *"sync_standby=2" ]] && ok "есть synchronous standby (sync replication)" || bad "нет sync_standby — синхронная репликация не активна"
 
 section "PostgreSQL: роли и привилегии"
-roles=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d postgres -Atc "
+roles=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d outbox -Atc "
   SELECT rolname, rolsuper, rolreplication, rolcanlogin FROM pg_roles
   WHERE rolname IN ('postgres','sys_writer','sys_app','sys_replication') ORDER BY rolname")
 echo "$roles" | sed 's/^/  /'
@@ -80,23 +81,25 @@ check_role sys_replication  f t t
 check_role sys_writer       f f t
 
 section "PostgreSQL: подключение через PgBouncer (transaction pool)"
-who=$($DC exec -T -e PGPASSWORD="$SYS_WRITER_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_writer -d postgres -Atc "SELECT current_user" 2>&1)
+who=$($DC exec -T -e PGPASSWORD="$SYS_WRITER_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_writer -d outbox -Atc "SELECT current_user" 2>&1)
 [[ "$who" == "sys_writer" ]] && ok "sys_writer подключается через PgBouncer" || bad "sys_writer через PgBouncer: $who"
-who=$($DC exec -T -e PGPASSWORD="$SYS_APP_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_app -d postgres -Atc "SELECT current_user" 2>&1)
+who=$($DC exec -T -e PGPASSWORD="$SYS_APP_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_app -d outbox -Atc "SELECT current_user" 2>&1)
 [[ "$who" == "sys_app" ]] && ok "sys_app подключается через PgBouncer" || bad "sys_app через PgBouncer: $who"
 pool_mode=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U postgres -d pgbouncer -Atc "SHOW CONFIG" 2>/dev/null | grep -E '^pool_mode\|' )
 [[ "$pool_mode" == *"transaction"* ]] && ok "PgBouncer pool_mode=transaction" || bad "pool_mode: '$pool_mode'"
 
-section "PostgreSQL: прикладная БД (postgres), publication, replication protocol"
-# Прикладная БД — postgres: PG17 slotsync worker синхронизирует слоты только
-# БД из primary_conninfo (см. infrastructure/postgres/init/01-db-publication.sql).
-pub=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d postgres -Atc "SELECT count(*) FROM pg_publication WHERE pubname='outbox_publication'")
-[[ "$pub" == "1" ]] && ok "publication outbox_publication существует" || bad "publication не найдена"
-pub_tables=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d postgres -Atc "SELECT count(*) FROM pg_publication_tables WHERE pubname='outbox_publication' AND schemaname='public' AND tablename='outbox_messages'")
+section "PostgreSQL: прикладная БД (outbox), publication, replication protocol"
+# Прикладная БД — отдельная outbox, не postgres (решение владельца, deviations.md):
+# реальное приложение живёт в своей БД. PG17 slotsync worker синхронизирует слоты
+# только БД из dbname primary_conninfo — Patroni выставляет там outbox через
+# postgresql.database (см. patroni.yml и bootstrap-with-appdb.sh).
+pub=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d outbox -Atc "SELECT count(*) FROM pg_publication WHERE pubname='outbox_publication'")
+[[ "$pub" == "1" ]] && ok "publication outbox_publication существует (БД outbox)" || bad "publication не найдена"
+pub_tables=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d outbox -Atc "SELECT count(*) FROM pg_publication_tables WHERE pubname='outbox_publication' AND schemaname='public' AND tablename='outbox_messages'")
 [[ "$pub_tables" == "1" ]] && ok "publication содержит outbox_messages (pgoutput эмитит только опубликованные таблицы)" || bad "publication не содержит outbox_messages: '$pub_tables'"
 # Протокол логической репликации от sys_replication напрямую через HAProxy (минуя PgBouncer)
 identify=$($DC exec -T -e PGPASSWORD="$SYS_REPLICATION_PASSWORD" pg1 \
-  psql "host=haproxy dbname=postgres user=sys_replication replication=database" -Atc "IDENTIFY_SYSTEM" 2>&1)
+  psql "host=haproxy dbname=outbox user=sys_replication replication=database" -Atc "IDENTIFY_SYSTEM" 2>&1)
 [[ "$identify" == *"systemid"* || -n "$identify" ]] && ok "sys_replication: replication protocol доступен (IDENTIFY_SYSTEM)" || bad "replication protocol: $identify"
 
 section "PostgreSQL: failover logical slot (pgoutput)"
@@ -133,11 +136,11 @@ peek_count() {
   psql_primary -Atc "SELECT count(*) FROM pg_logical_slot_peek_binary_changes('outbox_slot', NULL, NULL, 'proto_version','1','publication_names','outbox_publication')" 2>/dev/null
 }
 before=$(peek_count); before=${before:-0}
-rows_before=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d postgres -Atc "SELECT count(*) FROM public.outbox_messages")
+rows_before=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d outbox -Atc "SELECT count(*) FROM public.outbox_messages")
 # Фиксированный UUID: DELETE фильтрует по id — у sys_writer колоночный SELECT(id)
 # (WHERE в DELETE читает колонки условия; чтение body запрещено и не нужно).
 smoke_uuid="00000000-0000-7000-8000-000000000c0d"
-inserted=$($DC exec -T -e PGPASSWORD="$SYS_WRITER_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_writer -d postgres -Atc "
+inserted=$($DC exec -T -e PGPASSWORD="$SYS_WRITER_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_writer -d outbox -Atc "
 BEGIN;
 INSERT INTO public.outbox_messages (id, topic, body) VALUES ('$smoke_uuid', 'outbox.events', '{\"smoke\":\"infra-check\"}');
 DELETE FROM public.outbox_messages WHERE id = '$smoke_uuid'::uuid;
@@ -156,7 +159,7 @@ done
 # (Relation + Insert + Delete внутри транзакции; B/C-обрамление может объединяться
 # с соседними транзакциями — поэтому порог 3, а не 5).
 if [[ "$delta" -ge 3 ]]; then ok "peek (pgoutput, binary) видит изменения: было $before, стало $after (Δ$delta)"; else bad "peek не видит изменения (before=$before after=$after)"; fi
-rows_after=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d postgres -Atc "SELECT count(*) FROM public.outbox_messages")
+rows_after=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d outbox -Atc "SELECT count(*) FROM public.outbox_messages")
 [[ "$rows_after" == "$rows_before" ]] && ok "outbox_messages не выросла (строка удалена в той же транзакции)" || bad "таблица выросла: $rows_before → $rows_after"
 
 section "Kafka: topic"
