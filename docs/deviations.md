@@ -187,6 +187,47 @@ LSN совпадают, catalog_xmin стендбая (773) обогнал сл�
   «For replication slot synchronization it is also necessary to specify a
   valid dbname in the primary_conninfo string»).
 
+### Дополнение (2026-10-17): synced-копии переживают рестарт; остаток после demotion — конфликт имён
+
+Уточнение механики по исходникам PostgreSQL 17.2 (`slotsync.c`, `slot.h`) и
+повторной проверке на стенде. Корректирует прежнюю атрибуцию «после рестарта
+стенда флаг synced не переживает рестарт» — она была ошибочной (исправлена в
+комментарии `03-slot-reconcile.sql` и AGENTS.md, коммит 79a7e22):
+
+1. **Synced-копии персистентны и переживают рестарты штатно.** Поля `synced`
+   и `failover` входят в `ReplicationSlotPersistentData` — сохраняемое на
+   диск состояние слота («On-Disk data of a replication slot, preserved
+   across restarts», `slot.h`). Воркер не пересоздаёт такие копии, а
+   обновляет на месте (`update_local_synced_slot` /
+   `update_and_persist_local_synced_slot`, `slotsync.c`). Проверено
+   контролируемым рестартом pg2 на стенде: копия уцелела без изменений
+   (synced=true, те же restart_lsn/confirmed_flush_lsn), воркер
+   перезапустился без ошибок, репликация вернулась.
+2. **Остаток после demotion — конфликт имён, а не потеря флага.** Старый
+   primary возвращается standby со своим оригинальным слотом
+   (synced=false: на primary флаг не выставляется — synced=true там бывает
+   только «leftover from a promoted standby», что и видно на pg1). Воркер
+   синхронизирует только failover-слоты, и одноимённый локальный слот с
+   synced=false завершает его целиком: `exiting from slot synchronization
+   because same name slot "outbox_slot" already exists on the standby`
+   (`slotsync.c`) — нода не получает синхронизированных копий, пока остаток
+   не удалён. Лечение — `03-slot-reconcile.sql` (drop только `NOT synced` и
+   только на standby). Полный рестарт стенда порождал остатки именно через
+   гонки промоушенов Patroni (вернувшийся старый primary), а не напрямую.
+3. **Два «плохих» состояния не путать.** (а) synced=false-остаток
+   оригинального слота вернувшейся ноды → удалить, воркер пересоздаст копию;
+   (б) копия, которую нельзя безопасно привести к состоянию primary
+   («remote slot precedes local slot», недоступные WAL/каталоги — основная
+   часть этого раздела) → НЕ удалять: небезопасную копию воркер держит
+   temporary и не делает persistent, при promotion она отбрасывается
+   (отсюда процитированное выше «Only persistent slots that have attained
+   synced state as true … can be used»); лечение — продвижение слота на
+   primary, что работающий CDC делает непрерывно.
+
+Актуально для HA-тестов (этап 7): после каждого switchover демоутнутая нода
+требует reconcile до возвращения в HA-готовное состояние; в тестовых циклах
+с wipe скрипт — no-op.
+
 ## 4. Привилегии PG17 на SQL-функции слота: почему SECURITY DEFINER обязателен
 
 requirements.md 5.2: «Исследуй реальные требования PostgreSQL 17 к выполнению
