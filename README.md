@@ -220,6 +220,58 @@ curl -s $S/health; curl -s $S/ready; curl -s $S/metrics | grep cdc_streaming_
 (`CDCSTREAMING__STREAMING__*`, `CDCSTREAMING__CONNECTION__*`) — значения стенда.
 Смена batch: правка `.env` + `docker compose --profile streaming up -d --no-deps cdc-streaming`.
 
+## Мониторинг инфраструктуры (этап 6, requirements.md §13.3)
+
+Три exporter'а (always-on, без profile; порты наружу не публикуются — scrape
+внутри сети, проверки с хоста через `http://localhost:9090/api/v1`):
+
+| Требование §13.3 | Exporter | Метрики |
+|---|---|---|
+| PostgreSQL replication lag | postgres-exporter | `pg_replication_replay_lag_bytes{application_name}` (байты до replay; включает логический walsender `cdc-*` — это серверный WAL lag CDC) |
+| Logical slot state | postgres-exporter | `pg_slot_active{slot_name}`, `pg_slot_wal_retained_bytes` (WAL retention), `pg_slot_flush_lag_bytes`, labels `wal_status`/`plugin`; `pg_slot_safe_wal_size_bytes` — появится при включении `max_slot_wal_keep_size` (WAL Pressure Test) |
+| WAL retention | postgres-exporter | `pg_wal_position_bytes`, `pg_wal_dir_bytes`/`pg_wal_dir_files`, `pg_slot_wal_retained_bytes` |
+| Kafka broker availability | kafka-exporter | `kafka_brokers` (=3, когда все живы) |
+| Kafka topic offsets | kafka-exporter | `kafka_topic_partition_current_offset{topic,partition}` |
+| Kafka consumer lag (если применимо) | kafka-exporter | `kafka_consumergroup_lag` — осмысленно с появлением консюмер-группы (KafkaValidator, этап 7) |
+| CPU / RAM | cAdvisor | VM-root стенда (`container_*{id="/"}`); per-container — сэмплером ниже (см. ограничения) |
+
+Подключение postgres-exporter: напрямую `haproxy:5432` от роли `sys_monitor`
+(`pg_monitor`, INHERIT; без peek/advance/REPLICATION — мониторинг не может
+двигать слот; пароль — `SYS_MONITOR_PASSWORD` в `.env`). Кастомные запросы —
+`infrastructure/prometheus/postgres-exporter-queries.yaml`.
+
+```bash
+# Запуск (после первого up'а стенда поднимаются сами):
+docker compose up -d --no-deps postgres-exporter kafka-exporter cadvisor
+docker compose restart prometheus   # правка prometheus.yml: bind-mount держит старый inode
+
+# Быстрые проверки из Prometheus:
+curl -s -G localhost:9090/api/v1/query --data-urlencode 'query=pg_up' | jq .data.result[0].value
+curl -s -G localhost:9090/api/v1/query --data-urlencode 'query=kafka_brokers' | jq .data.result[0].value
+curl -s -G localhost:9090/api/v1/query --data-urlencode 'query=pg_slot_wal_retained_bytes{slot_name="outbox_slot"}' | jq .data.result[0].value
+```
+
+### Сохранение результатов тестов (requirements.md §13.4)
+
+После каждого теста — JSON с итогами и CSV с временными рядами; счётчики
+берутся из фактических данных (API Writer/CDC + Kafka consume по `runId` +
+слот из БД), а не из Prometheus (scrape теряет кратковременные события):
+
+```bash
+# Сбор итогов последнего прогона (arm определяется по запущенному CDC):
+./scripts/reports/collect-results.sh <runId> --notes "что происходило в тесте"
+# → results/raw/<ts>-<runId>/result.json (нагрузка, счётчики, kafka
+#   unique/duplicates/missing, отказы, recovery, версии, срез docker stats)
+#   + timeseries.csv (19 рядов: writer/cdc/pg/kafka/VM с шагом 5с по окну прогона)
+
+# Per-container CPU/RAM во время теста (фон, Ctrl+C — стоп):
+./scripts/reports/sample-docker-stats.sh results/raw/<имя>/docker-stats.csv 5
+```
+
+Артефакты лежат в `results/raw/` (в .gitignore). Per-container CPU/RAM —
+сэмплером, потому что cAdvisor на Docker Desktop (containerd image store) не
+видит контейнеры — подробно в docs/deviations.md §7.
+
 ## Полезные команды
 
 Пароли в примерах (`postgres`, `writer_secret`, …) — значения по умолчанию
@@ -274,6 +326,12 @@ for n in pg1 pg2 pg3; do docker compose exec -e PGPASSWORD=postgres $n \
 # Kafka: описание topic
 docker compose exec kafka1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic outbox.events
 
+# Prometheus: таргеты и мгновенные метрики (§19 «просмотр Prometheus»)
+curl -s localhost:9090/api/v1/targets | python3 -c 'import json,sys; [print(t["labels"]["job"], t["health"]) for t in json.load(sys.stdin)["data"]["activeTargets"]]'
+
+# Сохранение результатов теста (§19 «сохранение результатов»)
+./scripts/reports/collect-results.sh <runId> --notes "описание теста"
+
 # Повторная идемпотентная инициализация (роли/БД/publication/слот/userlist)
 ./scripts/init/apply-bootstrap.sh
 
@@ -298,8 +356,8 @@ tests/CdcStreaming.UnitTests/   — xunit-тесты: карта колонок/
 infrastructure/
   patroni/                      — Dockerfile (postgres:17.2 + patroni 4.1.5) и patroni.yml
   postgres/init/                — идемпотентный SQL-bootstrap (роли, outbox-таблица, publication,
-                                   слот, функции CDC Polling, гранты CDC Streaming)
-  haproxy/ pgbouncer/ prometheus/
+                                   слот, функции CDC Polling, гранты CDC Streaming, роль мониторинга)
+  haproxy/ pgbouncer/ prometheus/  (+ postgres-exporter-queries.yaml — кастомные запросы §13.3)
 scripts/
   check-infra.sh                — полная проверка стенда (exit 0 = всё зелёное)
   test/smoke-writer.sh          — живая проверка Writer (прогон/БД/метрики/direct/рестарт)
@@ -307,13 +365,18 @@ scripts/
   test/smoke-cdc-streaming.sh   — живая проверка CDC Streaming (доставка/feedback/метрики/рестарт/batch size)
   init/apply-bootstrap.sh       — повторный запуск инициализации БД
   reset/wipe.sh                 — полный сброс (down -v)
+  reports/collect-results.sh    — сбор результатов теста: result.json + timeseries.csv (§13.4)
+  reports/sample-docker-stats.sh — сэмплер per-container CPU/RAM (docker stats → CSV)
+results/raw/                    — артефакты прогонов (gitignored)
 docs/
   deviations.md                 — отклонения от ТЗ и их причины
 ```
 
 ## Что дальше (по плану requirements.md)
 
-Далее: метрики CDC-инфраструктуры (§13.3), HA-тесты TEST-HA-001..008 (в т.ч.
-TEST-HA-004 — убийство walsender для стриминга), benchmark-циклы A/B (полный wipe
-между ними, requirements.md 11) и сравнительный отчёт. Отложено владельцем на
-поздний этап: Schema Registry + Avro-тело сообщения (сейчас body — JSON `jsonb`).
+Далее: KafkaValidator и integration-тесты (§15), HA-тесты TEST-HA-001..008
+(в т.ч. TEST-HA-004 — убийство walsender для стриминга) и WAL Pressure Test
+(§12.2 — метрика `pg_slot_safe_wal_size_bytes` под него уже готова),
+benchmark-циклы A/B (полный wipe между ними, requirements.md 11) и
+сравнительный отчёт. Отложено владельцем на поздний этап: Schema Registry +
+Avro-тело сообщения (сейчас body — JSON `jsonb`).

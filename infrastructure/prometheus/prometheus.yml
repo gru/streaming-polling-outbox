@@ -1,6 +1,5 @@
 # Prometheus: pull model, scrape interval ~5s (requirements.md раздел 13).
 # Grafana/Pushgateway запрещены требованиями и не настраиваются.
-# Джобы для .NET-сервисов (Writer/CDC, /metrics) будут добавлены на этапе 6.
 
 global:
   scrape_interval: 5s
@@ -34,3 +33,26 @@ scrape_configs:
   - job_name: cdc-streaming
     static_configs:
       - targets: ['cdc-streaming:8080']
+
+  # Этап 6, requirements.md 13.3 — метрики инфраструктуры.
+  # Patroni /metrics не скрапим: требует basic-auth в этом файле, а конфиг
+  # bind-mounted из репозитория и не темплейтится env'ом (hardcoded secrets
+  # запрещены, requirements.md 23); состояние кластера HA-скрипты этапа 8
+  # берут напрямую из Patroni REST API. Подробности — docs/deviations.md 7.
+
+  # PostgreSQL: replication lag, logical slot state, WAL retention
+  # (кастомные запросы — postgres-exporter-queries.yaml рядом с этим файлом)
+  - job_name: postgres-exporter
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  # Kafka: доступность брокеров, offsets топиков, consumer lag (с этапа 7)
+  - job_name: kafka-exporter
+    static_configs:
+      - targets: ['kafka-exporter:9308']
+
+  # CPU/RAM контейнеров (сравнение A/B, requirements.md 16)
+  - job_name: cadvisor
+    static_configs:
+      - targets: ['cadvisor:8080']
+

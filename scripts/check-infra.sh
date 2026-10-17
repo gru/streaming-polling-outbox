@@ -70,7 +70,7 @@ echo "  $patroni_result"
 section "PostgreSQL: роли и привилегии"
 roles=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d outbox -Atc "
   SELECT rolname, rolsuper, rolreplication, rolcanlogin FROM pg_roles
-  WHERE rolname IN ('postgres','sys_writer','sys_app','sys_replication') ORDER BY rolname")
+  WHERE rolname IN ('postgres','sys_writer','sys_app','sys_replication','sys_monitor') ORDER BY rolname")
 echo "$roles" | sed 's/^/  /'
 check_role() { # name super repl login
   local row; row=$(echo "$roles" | grep -E "^$1\|")
@@ -79,6 +79,20 @@ check_role() { # name super repl login
 check_role sys_app          f f t
 check_role sys_replication  f t t
 check_role sys_writer       f f t
+check_role sys_monitor      f f t
+
+# sys_monitor (этап 6): pg_monitor с ДЕЙСТВУЮЩИМИ привилегиями. Грабли PG16+:
+# опция inherit фиксируется в момент GRANT по атрибуту роли на тот момент;
+# наследованный позже ALTER ROLE ... INHERIT её не обновляет — пока грант не
+# повторён WITH INHERIT TRUE, экспортер получает permission denied на каждом
+# scrape (pg_ls_waldir, pg_stat_replication).
+monitor_membership=$($DC exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" pg1 psql -h haproxy -U postgres -d outbox -Atc "
+  SELECT m.inherit_option::int||' '||r.rolinherit::int
+  FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.member
+  WHERE r.rolname='sys_monitor' AND m.roleid='pg_monitor'::regrole")
+[[ "$monitor_membership" == "1 1" ]] \
+  && ok "sys_monitor: pg_monitor с WITH INHERIT TRUE (привилегии действуют при логине)" \
+  || bad "sys_monitor/pg_monitor: membership=${monitor_membership:-нет} (ожидалось '1 1')"
 
 section "PostgreSQL: подключение через PgBouncer (transaction pool)"
 who=$($DC exec -T -e PGPASSWORD="$SYS_WRITER_PASSWORD" pg1 psql -h pgbouncer -p 6432 -U sys_writer -d outbox -Atc "SELECT current_user" 2>&1)
@@ -264,6 +278,39 @@ if [[ "$targets_result" == *"down_unexpected=0"* && "$targets_result" != *"PARSE
 else
   bad "таргеты: $targets_result"
 fi
+
+section "Мониторинг: exporters (requirements.md 13.3, этап 6)"
+# Мгновенные запросы к Prometheus: exporter жив И отдаёт содержательные метрики.
+prom_query() { # promql → значение на stdout (или ПУСТО)
+  curl -s --max-time 8 -G http://localhost:9090/api/v1/query --data-urlencode "query=$1" 2>/dev/null \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); m=d["data"]["result"]; print(m[0]["value"][1] if m else "")' 2>/dev/null
+}
+for job in postgres-exporter kafka-exporter cadvisor; do
+  job_state=$(echo "$targets" | python3 -c "
+import json, sys
+t = json.load(sys.stdin)['data']['activeTargets']
+w = [x['health'] for x in t if x['labels'].get('job') == '$job']
+print(w[0] if w else 'missing')" 2>/dev/null)
+  [[ "$job_state" == "up" ]] && ok "таргет $job up" || bad "таргет $job: $job_state"
+done
+pg_up=$(prom_query 'pg_up')
+[[ "$pg_up" == "1" ]] && ok "postgres-exporter: pg_up=1 (подключение к primary живо)" || bad "pg_up=$pg_up"
+wal_pos=$(prom_query 'pg_wal_position_bytes')
+[[ -n "$wal_pos" ]] && ok "pg_wal_position_bytes присутствует ($wal_pos)" || bad "pg_wal_position_bytes пуст"
+slot_retained=$(prom_query 'pg_slot_wal_retained_bytes{slot_name="outbox_slot"}')
+[[ -n "$slot_retained" ]] && ok "pg_slot_wal_retained_bytes{outbox_slot} присутствует ($slot_retained байт WAL retention)" || bad "pg_slot_wal_retained_bytes пуст"
+wal_dir=$(prom_query 'pg_wal_dir_bytes')
+[[ -n "$wal_dir" ]] && ok "pg_wal_dir_bytes присутствует ($wal_dir)" || bad "pg_wal_dir_bytes пуст"
+repl_lag=$(prom_query 'pg_replication_replay_lag_bytes{application_name=~"pg2|pg3"} != 1e18' )
+[[ -n "$repl_lag" ]] && ok "pg_replication_replay_lag_bytes{pg2/pg3} присутствует (replication lag)" || bad "pg_replication_replay_lag_bytes пуст"
+brokers=$(prom_query 'kafka_brokers')
+[[ "$brokers" == "3" ]] && ok "kafka-exporter: kafka_brokers=3 (все брокеры видны)" || bad "kafka_brokers=$brokers"
+offsets=$(prom_query 'sum(kafka_topic_partition_current_offset{topic="outbox.events"})')
+[[ -n "$offsets" && "$offsets" != "0" ]] && ok "offsets outbox.events читаются (сумма партиций=$offsets)" || bad "kafka offsets пуст"
+# cAdvisor на Docker Desktop (containerd image store) видит только VM-root —
+# per-container серий нет (docs/deviations.md 7); проверяем root-серию CPU.
+cadv=$(prom_query 'container_cpu_usage_seconds_total{id="/",cpu="total"}')
+[[ -n "$cadv" ]] && ok "cadvisor: VM-root CPU-серия присутствует (per-container — см. deviations 7)" || bad "cadvisor root CPU пуст"
 
 printf '\n\033[1mИТОГ: PASS=%d FAIL=%d\033[0m\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

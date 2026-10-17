@@ -1,0 +1,103 @@
+# Кастомные запросы postgres_exporter (этап 6, requirements.md 13.3 + 12.1).
+# Имя ключа = префикс метрик (pg_wal_position_* и т.д.).
+#
+# Общие правила:
+# - bool -> CASE ... 1/0 (экспортер не умеет bool);
+# - ::double precision для байтов (LSN до 2^48 точно помещается в float64);
+# - WHERE NOT pg_is_in_recovery() у primary-only запросов: HAProxy ведёт к
+#   primary, но в окне failover соединение может попасть на реплику — там
+#   pg_current_wal_lsn() падает ошибкой и ломал бы весь scrape;
+# - колонки с возможными NULL вынесены в отдельные запросы с фильтром
+#   IS NOT NULL — иначе экспортер пишет NaN-сэмплы (synced-слоты без
+#   confirmed_flush, проверено на стенде).
+#
+# Префиксы pg_slot_* выбраны, чтобы не путаться со встроенным коллектором
+# replication_slot (его метрики pg_replication_slot_*_lsn как float).
+
+# Абсолютная позиция WAL (для CSV/графиков: рост = интенсивность записи).
+# ВАЖНО: pg_wal_lsn_diff(end, start) = end − start (первый прогон с
+# перепутанным порядком давал отрицательные значения).
+pg_wal_position:
+  query: |
+    SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::double precision AS bytes
+    WHERE NOT pg_is_in_recovery()
+  metrics:
+    - bytes: {usage: GAUGE, description: "Текущая позиция WAL (байт от 0/0), только primary"}
+
+# Объём каталога pg_wal — наблюдение за удерживаемым WAL (12.1); работает и на реплике.
+pg_wal_dir:
+  query: |
+    SELECT count(*)::double precision AS files,
+           coalesce(sum(size), 0)::double precision AS bytes
+    FROM pg_ls_waldir()
+  metrics:
+    - files: {usage: GAUGE, description: "Файлов в pg_wal"}
+    - bytes: {usage: GAUGE, description: "Суммарный объём pg_wal, байт"}
+
+# Logical slots: состояние (13.3) и WAL retention (12.1-12.2):
+# wal_retained = текущий WAL − restart_lsn (сколько WAL держит слот).
+# Через HAProxy (primary) видны logical-слот outbox_slot и ФИЗИЧЕСКИЕ
+# слоты Patroni pg2/pg3 (plugin пустой, confirmed_flush NULL — поэтому
+# flush_lag в отдельном запросе с фильтром). Synced-копии outbox_slot
+# живут на standby и отсюда не видны.
+pg_slot:
+  query: |
+    SELECT slot_name,
+           CASE WHEN active THEN 1 ELSE 0 END AS active,
+           pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::double precision AS wal_retained_bytes,
+           wal_status,
+           plugin,
+           CASE WHEN synced THEN 1 ELSE 0 END AS synced
+    FROM pg_replication_slots
+    WHERE NOT pg_is_in_recovery() AND restart_lsn IS NOT NULL
+  metrics:
+    - slot_name: {usage: LABEL, description: "Имя слота"}
+    - active: {usage: GAUGE, description: "Слот занят потребителем"}
+    - wal_retained_bytes: {usage: GAUGE, description: "WAL, удерживаемый слотом (retention)"}
+    - wal_status: {usage: LABEL, description: "reserved/extended/unreserved/lost"}
+    - plugin: {usage: LABEL, description: "Плагин декодирования"}
+    - synced: {usage: GAUGE, description: "Слот синхронизирован со standby"}
+
+# Отставание подтверждения: текущий WAL − confirmed_flush_lsn.
+# Только слоты с подтверждением (outbox_slot); физические слоты отфильтрованы.
+pg_slot_flush_lag:
+  query: |
+    SELECT slot_name,
+           pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)::double precision AS bytes
+    FROM pg_replication_slots
+    WHERE NOT pg_is_in_recovery() AND confirmed_flush_lsn IS NOT NULL
+  metrics:
+    - slot_name: {usage: LABEL, description: "Имя слота"}
+    - bytes: {usage: GAUGE, description: "Отставание confirmed_flush от текущего WAL"}
+
+# Запас до инвалидизации при max_slot_wal_keep_size. Пока лимит выключен
+# (-1, текущее состояние стенда) — safe_wal_size NULL и метрика пустая;
+# появится в WAL Pressure Test (этап 8, requirements.md 12.2).
+pg_slot_safe_wal:
+  query: |
+    SELECT slot_name,
+           safe_wal_size::double precision AS bytes
+    FROM pg_replication_slots
+    WHERE NOT pg_is_in_recovery() AND safe_wal_size IS NOT NULL
+  metrics:
+    - slot_name: {usage: LABEL, description: "Имя слота"}
+    - bytes: {usage: GAUGE, description: "Запас WAL до инвалидизации слота"}
+
+# Репликация (13.3 "PostgreSQL replication lag"): bytes между текущим WAL
+# и replay_lsn walsender'ов. Включает и ЛОГИЧЕСКИЙ walsender cdc-* — у него
+# replay_lsn = confirmed_flush слота, т.е. это серверный WAL lag CDC;
+# физические реплики Patroni отличимы по label application_name (pg2/pg3).
+# Nullable-колонки write/flush_lag сознательно не берём.
+pg_replication:
+  query: |
+    SELECT application_name,
+           CASE WHEN state = 'streaming' THEN 1 ELSE 0 END AS streaming,
+           pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn)::double precision AS replay_lag_bytes,
+           sync_state
+    FROM pg_stat_replication
+    WHERE NOT pg_is_in_recovery() AND replay_lsn IS NOT NULL
+  metrics:
+    - application_name: {usage: LABEL, description: "Имя walsender-клиента"}
+    - streaming: {usage: GAUGE, description: "Соединение в состоянии streaming"}
+    - replay_lag_bytes: {usage: GAUGE, description: "Отставание replay, байт"}
+    - sync_state: {usage: LABEL, description: "sync/quasi-sync/async"}

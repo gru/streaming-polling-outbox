@@ -221,6 +221,7 @@ services:
       SYS_WRITER_PASSWORD: ${SYS_WRITER_PASSWORD:?set in .env}
       SYS_APP_PASSWORD: ${SYS_APP_PASSWORD:?set in .env}
       SYS_REPLICATION_PASSWORD: ${SYS_REPLICATION_PASSWORD:?set in .env}
+      SYS_MONITOR_PASSWORD: ${SYS_MONITOR_PASSWORD:?set in .env}
     volumes:
       - ./infrastructure/postgres/init:/init:ro
       - pgbouncer_config:/pgbouncer-config
@@ -233,12 +234,13 @@ services:
         until psql -h haproxy -U postgres -d postgres -tAc "SELECT pg_is_in_recovery()" 2>/dev/null | grep -q f; do
           sleep 2
         done
-        for f in /init/00-roles.sql /init/01-db-publication.sql /init/02-slot.sql /init/04-cdc-polling.sql /init/05-cdc-streaming.sql; do
+        for f in /init/00-roles.sql /init/01-db-publication.sql /init/02-slot.sql /init/04-cdc-polling.sql /init/05-cdc-streaming.sql /init/06-monitoring.sql; do
           echo "[init-db] Applying $$f"
           psql -v ON_ERROR_STOP=1 -h haproxy -U postgres -d postgres \
             -v sys_writer_password="$$SYS_WRITER_PASSWORD" \
             -v sys_app_password="$$SYS_APP_PASSWORD" \
             -v sys_replication_password="$$SYS_REPLICATION_PASSWORD" \
+            -v sys_monitor_password="$$SYS_MONITOR_PASSWORD" \
             -f "$$f"
         done
         # 03 выполняется на каждой ноде напрямую (реплики недоступны через HAProxy)
@@ -548,3 +550,81 @@ services:
       retries: 6
       start_period: 15s
     restart: unless-stopped
+
+  # ---------- Exporters метрик инфраструктуры (этап 6, requirements.md 13.3) ----------
+  # Порты наружу не публикуются: scrape только внутри сети, проверки с хоста —
+  # через Prometheus API (localhost:9090). Образы без shell (distroless/scratch) —
+  # без healthcheck; их работоспособность проверяет target-up в Prometheus
+  # (scripts/check-infra.sh, секция мониторинга).
+
+  # PostgreSQL: replication lag, состояние logical slot, WAL retention.
+  # Подключение напрямую через HAProxy (всегда primary; PgBouncer не нужен —
+  # экспортер держит одно собственное соединение) от роли sys_monitor
+  # (06-monitoring.sql: pg_monitor, без peek/advance/REPLICATION).
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    command:
+      # Выключаем несовместимые/дублирующие встроенные коллекторы:
+      #  - stat_bgwriter ломается на PG17 (колонки checkpoints_* переехали
+      #    в pg_stat_checkpointer; фикс есть только в новых версиях экспортера);
+      #  - database коннектится к каждой БД кластера — у sys_monitor CONNECT
+      #    только на outbox, а per-DB статистика требованиям 13.3 не нужна;
+      #  - wal дублируется кастомными запросами queries.yaml (pg_wal_position,
+      #    pg_wal_dir) — один документированный источник правды.
+      - --no-collector.stat_bgwriter
+      - --no-collector.database
+      - --no-collector.wal
+    environment:
+      DATA_SOURCE_NAME: postgresql://sys_monitor:${SYS_MONITOR_PASSWORD:?set in .env}@haproxy:5432/outbox?sslmode=disable
+      # В v0.15 префикс PG_EXPORTER_* (POSTGRES_EXPORTER_* появился позже)
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres-exporter/queries.yaml
+    volumes:
+      - ./infrastructure/prometheus/postgres-exporter-queries.yaml:/etc/postgres-exporter/queries.yaml:ro
+    networks: [outbox-net]
+    restart: unless-stopped
+    depends_on:
+      haproxy: {condition: service_healthy}
+
+  # Kafka: доступность брокеров, offsets топиков, consumer lag (появится,
+  # когда консюмер-группа появится — KafkaValidator, этап 7). Говорит по
+  # обычному PLAINTEXT-протоколу, сами брокеры не настраиваются.
+  # Брокеры передаются флагами: бинарник не читает env KAFKA_BROKERS
+  # (без флагов остаётся на дефолте kafka:9092).
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.8.0
+    command:
+      - --kafka.server=kafka1:9092
+      - --kafka.server=kafka2:9092
+      - --kafka.server=kafka3:9092
+    networks: [outbox-net]
+    restart: unless-stopped
+    depends_on:
+      kafka1: {condition: service_healthy}
+      kafka2: {condition: service_healthy}
+      kafka3: {condition: service_healthy}
+
+  # CPU/RAM (этап 6). ОГРАНИЧЕНИЕ Docker Desktop (containerd image store):
+  # каталога /var/lib/docker/image/... нет, cAdvisor не может определить
+  # rw-layer контейнеров ("failed to identify the read-write layer ID",
+  # проверено на v0.49.1 и v0.51.0) — per-container серий НЕТ; экспортируется
+  # только VM-root (id="/"): общий CPU/RAM стенда как baseline для A/B (16).
+  # Per-container CPU/RAM собирает scripts/reports/sample-docker-stats.sh
+  # (docker stats). Подробности — docs/deviations.md 7.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    privileged: true
+    command:
+      - --housekeeping_interval=5s
+      - --docker_only
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      # docker.sock отдельной монтировкой rw: connect(2) к unix-сокету требует
+      # права write на inode — через общий /var/run:ro cAdvisor не может
+      # зарегистрировать docker-factory.
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks: [outbox-net]
+    restart: unless-stopped
+

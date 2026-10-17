@@ -370,3 +370,72 @@ EXECUTE ON FUNCTION cdc.outbox_slot_status()` (05-cdc-streaming.sql; SECURITY
 DEFINER, read-only, форма едина с Polling). Прямой доступ к `pg_replication_slots`
 не используется; peek/advance стримингу не грантуются (§8: «Не используй polling
 SQL-функций в этом режиме»).
+
+## 7. Этап 6 (observability, §13.3/13.4): решения и платформенные ограничения
+
+**(а) kafka-exporter (danielqsj) вместо JMX-exporter.** §13.3 требует только
+доступность брокеров, offsets топиков и consumer lag; danielqsj/kafka-exporter
+v1.8.0 даёт ровно это по обычному PLAINTEXT-протоколу без настройки самих
+брокеров. JMX-агент потребовал бы менять команду JVM брокеров и тянуть jar,
+не нужный требованиям; CPU/RAM брокеров покрывает контейнерный сэмплер.
+Грабли версии: env `KAFKA_BROKERS` бинарником не читается (дефолт `kafka:9092`)
+— брокеры задаются повторяемым флагом `--kafka.server=`.
+
+**(б) Patroni `/metrics` не скрапим.** Patroni требует basic-auth на `/metrics`,
+а `prometheus.yml` bind-mounted из репозитория и не темплейтится env'ом —
+вписывать пароль в конфиг нельзя (§23 «отсутствие hardcoded secrets»), а
+городить entrypoint-обёртку с sed ради неребованных §13.3 метрик не стали.
+Состояние кластера HA-скрипты (этап 8) берут напрямую из Patroni REST API
+(порты 8008-8010 опубликованы, `PATRONI_API_PASSWORD` в env скриптов);
+DCS-здоровье уже покрывает job `etcd`.
+
+**(в) Кастомные запросы postgres_exporter + guard `NOT pg_is_in_recovery()`.**
+Встроенных коллекторов v0.15.0 не хватает (нет WAL retention per slot), а
+`stat_bgwriter` несовместим с PG17 (колонки переехали в `pg_stat_checkpointer`)
+и `database` требует CONNECT на все БД — оба отключены, объём pg_wal и слоты
+дают кастомные запросы `postgres-exporter-queries.yaml`. Primary-only запросы
+фильтруются `NOT pg_is_in_recovery()`: HAProxy ведёт к primary, но в окне
+failover соединение может попасть на реплику, где `pg_current_wal_lsn()` падает
+ошибкой и ронял бы весь scrape. Роль `sys_monitor`: `pg_monitor` (встроенная,
+не SUPERUSER) + CONNECT на `outbox`; peek/advance/REPLICATION не грантуются —
+мониторинг не может потреблять или двигать слот.
+
+**(г) cAdvisor на Docker Desktop не видит контейнеры — per-container CPU/RAM
+сэмплером docker stats.** У Docker Desktop включён containerd image store
+(`docker info`: driver=overlayfs, io.containerd.snapshotter.v1; каталога
+`/var/lib/docker/image/...` не существует). cAdvisor (проверено v0.49.1 и
+v0.51.0) падает на каждом контейнере «failed to identify the read-write layer
+ID» и экспортирует только VM-root (`id="/"` — общий CPU/RAM стенда, оставлен
+как baseline для A/B). Отключение containerd-snapshotter — host-настройка
+Docker Desktop, затрагивающая другие проекты владельца (airo-host) — не
+делаем. Per-container CPU/RAM для §16 собирает `scripts/reports/
+sample-docker-stats.sh` (docker stats → CSV) и точечный срез в result.json
+коллектора. Дополнительно: docker.sock монтируется в cadvisor отдельной
+rw-монтировкой (connect(2) к unix-сокету требует write на inode — через
+общий `/var/run:ro` docker-factory не регистрируется).
+
+**(д) Артефакты результатов в `results/raw/` (gitignored).** §13.4 требует
+сохранять JSON+CSV после каждого теста, но не размещения их в VCS: сырые
+временные ряды повторяемых benchmark-циклов — крупные артефакты; каталог
+`results/raw/` уже был в .gitignore. Итоговые цифры этап 10 переносит в
+`docs/comparison.md`.
+
+**(е) Грабля PG16+, пойманная на sys_monitor (для будущих ролей).** Опция
+`inherit` членства записывается в `pg_auth_members` в момент `GRANT` по
+атрибуту роли на тот момент; последующий `ALTER ROLE ... INHERIT` её не
+обновляет. Роль, созданная NOINHERIT (паттерн прикладных ролей 00-roles.sql),
+получает членство `inherit=false` — привилегии `pg_monitor` не действуют при
+логине: `permission denied for function pg_ls_waldir`, колонки
+`pg_stat_replication` (state/sync_state/replay_lsn) маскируются в NULL.
+Лечение — `GRANT pg_monitor TO sys_monitor WITH INHERIT TRUE` (06-monitoring.sql);
+check-infra проверяет membership регрессионно.
+
+**(ж) Счётчики итогов — из фактических данных, не из Prometheus.** §13.4:
+«Prometheus scrape не гарантирует сохранения всех кратковременных событий».
+Коллектор (`scripts/reports/collect-results.sh`) берёт Writer `/api/generation/
+results|results/ids`, CDC `/api/cdc/state`, слот из БД и Kafka consume по
+`body.runId` (total/unique/duplicates/missing через set-diff с writtenIds);
+Prometheus (`query_range` по окну прогона, шаг 5 c) — только для CSV временных
+рядов. Версии: PG/patroni/kafka/dotnet-runtimes из контейнеров + образы
+(`docker compose images`); dotnet в runtime-образе — `--list-runtimes`
+(`--version` требует SDK, которого нет).
