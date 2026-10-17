@@ -46,10 +46,21 @@ scrape_configs:
     static_configs:
       - targets: ['postgres-exporter:9187']
 
-  # Kafka: доступность брокеров, offsets топиков, consumer lag (с этапа 7)
+  # Kafka: доступность брокеров, offsets топиков. Consumer lag для группы
+  # kafka-validator не возникает: валидатор сознательно не коммитит оффсеты
+  # (полная перемотка topic при каждом старте), а lag существует только для
+  # закоммиченных оффсетов — docs/deviations.md 8.
   - job_name: kafka-exporter
     static_configs:
       - targets: ['kafka-exporter:9308']
+
+  # Этап 7, requirements.md 15 — валидатор доставки: потребление topic,
+  # валидации прогонов (pass/fail), состояние. Детализация по прогонам —
+  # через HTTP API валидатора (порт 18083), не через метрики: точные итоговые
+  # счётчики берутся из фактических данных (§13.4), runId как label запрещён (§13.3).
+  - job_name: kafka-validator
+    static_configs:
+      - targets: ['kafka-validator:8080']
 
   # CPU/RAM контейнеров (сравнение A/B, requirements.md 16)
   - job_name: cadvisor

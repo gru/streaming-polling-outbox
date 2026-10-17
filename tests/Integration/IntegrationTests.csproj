@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>IntegrationTests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Контрактные тесты формата (requirements.md 18: tests/Integration):
+         Writer.MessageFactory → CdcCommon.Envelope → KafkaValidator.VerdictComputer
+         — весь путь формата без Kafka/стенда. Живой стенд проверяет
+         scripts/test/integration-delivery.sh (этап 7). -->
+    <ProjectReference Include="..\..\src\CdcCommon\CdcCommon.csproj" />
+    <ProjectReference Include="..\..\src\Writer\Writer.csproj" />
+    <ProjectReference Include="..\..\src\KafkaValidator\KafkaValidator.csproj" />
+  </ItemGroup>
+
+</Project>

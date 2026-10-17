@@ -71,8 +71,9 @@ pg-контейнеры и уронить Patroni-кластер; пересбо
 `./scripts/reset/wipe.sh`.
 
 Хост-порты: HAProxy (primary) — **5432**, PgBouncer — 6432, Writer HTTP API — **18080**,
-CDC Polling HTTP API — **18081**, CDC Streaming HTTP API — **18082**, Patroni REST —
-8008/8009/8010, Kafka — 9092-9094, Prometheus — 9090, HAProxy stats — 8404.
+CDC Polling HTTP API — **18081**, CDC Streaming HTTP API — **18082**, KafkaValidator
+HTTP API — **18083**, Patroni REST — 8008/8009/8010, Kafka — 9092-9094, Prometheus —
+9090, HAProxy stats — 8404.
 
 ## Writer: управление нагрузкой
 
@@ -232,7 +233,7 @@ curl -s $S/health; curl -s $S/ready; curl -s $S/metrics | grep cdc_streaming_
 | WAL retention | postgres-exporter | `pg_wal_position_bytes`, `pg_wal_dir_bytes`/`pg_wal_dir_files`, `pg_slot_wal_retained_bytes` |
 | Kafka broker availability | kafka-exporter | `kafka_brokers` (=3, когда все живы) |
 | Kafka topic offsets | kafka-exporter | `kafka_topic_partition_current_offset{topic,partition}` |
-| Kafka consumer lag (если применимо) | kafka-exporter | `kafka_consumergroup_lag` — осмысленно с появлением консюмер-группы (KafkaValidator, этап 7) |
+| Kafka consumer lag (если применимо) | kafka-exporter | `kafka_consumergroup_lag` — применимо только к группам, коммитящим оффсеты; группа kafka-validator сознательно не коммитит (полная перемотка topic при каждом старте), поэтому её lag не возникает — см. deviations §8 и раздел «KafkaValidator» ниже |
 | CPU / RAM | cAdvisor | VM-root стенда (`container_*{id="/"}`); per-container — сэмплером ниже (см. ограничения) |
 
 Подключение postgres-exporter: напрямую `haproxy:5432` от роли `sys_monitor`
@@ -271,6 +272,70 @@ curl -s -G localhost:9090/api/v1/query --data-urlencode 'query=pg_slot_wal_retai
 Артефакты лежат в `results/raw/` (в .gitignore). Per-container CPU/RAM —
 сэмплером, потому что cAdvisor на Docker Desktop (containerd image store) не
 видит контейнеры — подробно в docs/deviations.md §7.
+
+## KafkaValidator и integration-тесты (этап 7, requirements.md §15)
+
+[KafkaValidator](src/KafkaValidator) — отдельный validation tool (§15):
+«живой индекс» содержимого topic `outbox.events`. KafkaFlow-консьюмер в группе
+`kafka-validator` с `auto.offset.reset=earliest` и **без сохранения оффсетов**
+(`WithoutStoringOffsets` → NullOffsetCommitter/NullOffsetManager): каждый
+(ре)старт перематывает topic с начала и полностью восстанавливает счётчики всех
+прогонов. Это ключевая корректность: закоммиченные оффсеты после рестарта
+«съели» бы историю — и валидатор ложно сообщал бы о потерях. Побочный эффект:
+`kafka_consumergroup_lag` для группы не возникает (нет закоммиченных оффсетов),
+§13.3 «если применимо» — docs/deviations.md §8.
+
+| Требование §15 | Где смотреть |
+|---|---|
+| Общее количество Kafka records | `kafka.records` вердикта / `GET /api/validation/runs/{runId}` |
+| Количество уникальных `id` | `kafka.uniqueIds` |
+| Количество дубликатов | `kafka.duplicateRecords` (= records − uniqueIds; at-least-once, допустимо) |
+| Количество отсутствующих `id` | `missingWrittenIdsCount` — **доказанная потеря CDC** (Writer доказал commit, записи нет) |
+| Неопределённые коммиты Writer — отдельно | `ambiguousDeliveredCount` / `ambiguousNotDeliveredCount` (не потеря: исход commit не определён) |
+| Записано Writer | `expected.writtenCount` — из `GET /api/generation/results/ids` (fetchFromWriter) или явным набором id |
+| Подтверждено CDC | `cdc.messagesDelivered` + `cdc.confirmedLsn` — снапшот `/api/cdc/state` отвечающего arm в вердикте |
+| Уникальный идентификатор прогона в body | `body.runId` (кладёт Writer); ожидаемый набор id сохраняется `/api/generation/results/ids` |
+| Не полагаться только на Prometheus | все счётчики — из фактических записей topic; метрики без runId-label (§13.3) |
+
+Вердикт: `pass` ⇔ нет доказанных потерь (`missingWrittenIdsCount=0`) и нет
+неожидаемых лишних id (`unexpectedExtraIdsCount=0`); дубликаты вердикт не фейлят.
+
+```bash
+# Запуск на живом стенде (always-on сервис, паролей не требует):
+docker compose build kafka-validator && docker compose up -d --no-deps kafka-validator
+docker compose restart prometheus   # новый scrape-job: bind-mount держит старый inode
+
+V=http://localhost:18083
+curl -s $V/api/validation/state                    # состояние, счётчики потребления
+curl -s $V/api/validation/runs | python3 -m json.tool   # все прогоны topic (runId → records/unique/dupes)
+# Вердикт последнего прогона Writer (набор id берётся у Writer автоматически):
+curl -s -X POST $V/api/validation/validate -H 'Content-Type: application/json' \
+  -d '{"runId":"<runId>","fetchFromWriter":true}' | python3 -m json.tool
+# Вердикт старого прогона — явным сохранённым набором id:
+curl -s -X POST $V/api/validation/validate -H 'Content-Type: application/json' \
+  -d "{\"runId\":\"$RID\",\"writtenIds\":$(curl -s localhost:18080/api/generation/results/ids | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["writtenIds"]))')}"
+```
+
+Сброс состояния — только рестарт контейнера (`docker compose restart
+kafka-validator`): перемотка пересчитает всё заново (проверяется тестом T3).
+
+### Integration-тесты (этап 7, §20: «запись, чтение, доставку, количество, дубликаты»)
+
+Живой харнесс `scripts/test/integration-delivery.sh` (конвенция smoke-скриптов;
+standalone-раннер .NET-тестов не разворачивается — локальный dotnet v10,
+тесты ходят в sdk-контейнере вне сети стенда, deviations §8). Секции:
+T1 запись 300×256 через PgBouncer → T2 доставка/сверка вердиктом валидатора
+(fetchFromWriter + снапшот CDC) → T3 рестарт валидатора = полная перемотка →
+T4 запись direct (мимо PgBouncer) → T5 rate-limited 200@50/с + артефакты
+§13.4 (`collect-results.sh` + `validation-verdict.json` рядом с result.json).
+
+```bash
+./scripts/test/integration-delivery.sh                 # тестирует запущенный CDC-arm
+./scripts/test/integration-delivery.sh --arm polling   # сам переключит стенд (stop streaming → up polling)
+```
+
+Контрактные тесты формата (Writer → конверт → валидатор, без стенда):
+`tests/Integration/` — `dotnet test` (в sdk-контейнере, как остальные).
 
 ## Полезные команды
 
@@ -326,6 +391,11 @@ for n in pg1 pg2 pg3; do docker compose exec -e PGPASSWORD=postgres $n \
 # Kafka: описание topic
 docker compose exec kafka1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic outbox.events
 
+# KafkaValidator: проверка доставки последнего прогона (requirements.md 15):
+# записи/уникальные/дубликаты/потери + снапшот CDC; runId — из ответа старта Writer
+curl -s -X POST http://localhost:18083/api/validation/validate -H 'Content-Type: application/json' \
+  -d '{"runId":"<runId>","fetchFromWriter":true}' | python3 -m json.tool
+
 # Prometheus: таргеты и мгновенные метрики (§19 «просмотр Prometheus»)
 curl -s localhost:9090/api/v1/targets | python3 -c 'import json,sys; [print(t["labels"]["job"], t["health"]) for t in json.load(sys.stdin)["data"]["activeTargets"]]'
 
@@ -350,9 +420,12 @@ src/Writer/                     — Writer: ASP.NET Core 8, net8.0 (Minimal API 
 src/CdcCommon/                  — общая библиотека CDC: LSN, парсер бинарного pgoutput, конверт, backoff
 src/CdcPolling/                 — CDC Polling: peek → pgoutput → Kafka (KafkaFlow) → advance
 src/CdcStreaming/               — CDC Streaming: Npgsql PgOutput → Kafka (KafkaFlow) → replication feedback
+src/KafkaValidator/             — KafkaValidator: consumer-индекс topic + вердикты доставки (§15)
 tests/Writer.UnitTests/         — xunit-тесты критичной логики Writer
 tests/CdcPolling.UnitTests/     — xunit-тесты: golden-байты pgoutput, LSN, конверт, backoff, опции
 tests/CdcStreaming.UnitTests/   — xunit-тесты: карта колонок/сборка события, LSN-конверсия, опции
+tests/KafkaValidator.UnitTests/ — xunit-тесты: вердикт (потери/дубликаты/ambiguous), реестр прогонов, опции
+tests/Integration/              — контрактные тесты формата Writer → конверт → валидатор (§18)
 infrastructure/
   patroni/                      — Dockerfile (postgres:17.2 + patroni 4.1.5) и patroni.yml
   postgres/init/                — идемпотентный SQL-bootstrap (роли, outbox-таблица, publication,
@@ -363,6 +436,7 @@ scripts/
   test/smoke-writer.sh          — живая проверка Writer (прогон/БД/метрики/direct/рестарт)
   test/smoke-cdc-polling.sh     — живая проверка CDC Polling (доставка/LSN/метрики/рестарт/batch size)
   test/smoke-cdc-streaming.sh   — живая проверка CDC Streaming (доставка/feedback/метрики/рестарт/batch size)
+  test/integration-delivery.sh  — integration-тесты этапа 7: запись/чтение/доставка/количество/дубликаты (§15)
   init/apply-bootstrap.sh       — повторный запуск инициализации БД
   reset/wipe.sh                 — полный сброс (down -v)
   reports/collect-results.sh    — сбор результатов теста: result.json + timeseries.csv (§13.4)
@@ -374,9 +448,9 @@ docs/
 
 ## Что дальше (по плану requirements.md)
 
-Далее: KafkaValidator и integration-тесты (§15), HA-тесты TEST-HA-001..008
-(в т.ч. TEST-HA-004 — убийство walsender для стриминга) и WAL Pressure Test
-(§12.2 — метрика `pg_slot_safe_wal_size_bytes` под него уже готова),
+Далее: HA-тесты TEST-HA-001..008 (в т.ч. TEST-HA-004 — убийство walsender для
+стриминга; после каждого отказа delivery проверяет KafkaValidator) и WAL Pressure
+Test (§12.2 — метрика `pg_slot_safe_wal_size_bytes` под него уже готова),
 benchmark-циклы A/B (полный wipe между ними, requirements.md 11) и
 сравнительный отчёт. Отложено владельцем на поздний этап: Schema Registry +
 Avro-тело сообщения (сейчас body — JSON `jsonb`).

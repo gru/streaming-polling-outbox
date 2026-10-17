@@ -529,6 +529,46 @@ services:
       # topic создаётся до старта CDC (сам CDC topic не создаёт, requirements.md 3.2)
       kafka-init: {condition: service_completed_successfully}
 
+  # ---------- KafkaValidator (этап 7, requirements.md 15) ----------
+  # Живой индекс содержимого topic outbox.events: consumer-группа kafka-validator
+  # с auto.offset.reset=earliest и БЕЗ сохранения оффсетов — каждый старт читает
+  # topic с начала и полностью восстанавливает счётчики всех прогонов (иначе
+  # закоммиченные оффсеты после рестарта «съели» бы историю и валидатор ложно
+  # сообщал бы о потерях; следствие — kafka_consumergroup_lag группы не возникает,
+  # docs/deviations.md 8). Always-on, как writer: профилей не имеет.
+
+  kafka-validator:
+    build:
+      context: ./src
+      dockerfile: KafkaValidator/Dockerfile
+    image: streaming-polling-outbox/kafka-validator:net8.0
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      KAFKAVALIDATOR__KAFKA__BROKERS: kafka1:9092,kafka2:9092,kafka3:9092
+      KAFKAVALIDATOR__KAFKA__TOPIC: outbox.events
+      KAFKAVALIDATOR__KAFKA__GROUPID: kafka-validator
+      KAFKAVALIDATOR__WRITER__BASEURL: http://writer:8080
+      KAFKAVALIDATOR__CDCPOLLING__BASEURL: http://cdc-polling:8080
+      KAFKAVALIDATOR__CDCSTREAMING__BASEURL: http://cdc-streaming:8080
+    networks: [outbox-net]
+    ports:
+      - "${KAFKA_VALIDATOR_HTTP_PORT:-18083}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      kafka1: {condition: service_healthy}
+      kafka2: {condition: service_healthy}
+      kafka3: {condition: service_healthy}
+      kafka-init: {condition: service_completed_successfully}
+      # ожидаемый набор id берётся у Writer по запросу (fetchFromWriter)
+      writer: {condition: service_healthy}
+
   # ---------- Prometheus ----------
 
   prometheus:

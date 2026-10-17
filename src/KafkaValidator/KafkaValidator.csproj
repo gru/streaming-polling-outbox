@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>KafkaValidator</RootNamespace>
+    <AssemblyName>KafkaValidator</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Npgsql не нужен: валидатор не подключается к PostgreSQL — он сверяет
+         фактическое содержимое Kafka topic с ожидаемым набором id, который
+         отдаёт Writer (requirements.md 15). -->
+    <!-- KafkaFlow 4.2.0 — единая зафиксированная версия для всех сервисов
+         (requirements.md 9); здесь используется сторона consumer. -->
+    <PackageReference Include="KafkaFlow" Version="4.2.0" />
+    <PackageReference Include="KafkaFlow.Extensions.Hosting" Version="4.2.0" />
+    <PackageReference Include="KafkaFlow.LogHandler.Console" Version="4.2.0" />
+    <!-- OTel 1.9.0 + Prometheus exporter (pull, /metrics) — как у Writer/CDC. -->
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.9.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.9.0-beta.2" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.9.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CdcCommon\CdcCommon.csproj" />
+  </ItemGroup>
+
+</Project>

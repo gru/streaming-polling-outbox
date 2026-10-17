@@ -38,7 +38,7 @@ section "Compose config"
 if $DC config -q 2>/dev/null; then ok "docker compose config валиден"; else bad "docker compose config невалиден"; fi
 
 section "Контейнеры: healthchecks"
-for svc in etcd1 etcd2 etcd3 pg1 pg2 pg3 haproxy pgbouncer kafka1 kafka2 kafka3 prometheus; do
+for svc in etcd1 etcd2 etcd3 pg1 pg2 pg3 haproxy pgbouncer kafka1 kafka2 kafka3 prometheus kafka-validator; do
   state=$($DC ps "$svc" --format '{{.Health}}' 2>/dev/null)
   if [[ "$state" == "healthy" ]]; then ok "$svc healthy"; else bad "$svc: health=$state"; fi
 done
@@ -285,7 +285,7 @@ prom_query() { # promql → значение на stdout (или ПУСТО)
   curl -s --max-time 8 -G http://localhost:9090/api/v1/query --data-urlencode "query=$1" 2>/dev/null \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); m=d["data"]["result"]; print(m[0]["value"][1] if m else "")' 2>/dev/null
 }
-for job in postgres-exporter kafka-exporter cadvisor; do
+for job in postgres-exporter kafka-exporter cadvisor kafka-validator; do
   job_state=$(echo "$targets" | python3 -c "
 import json, sys
 t = json.load(sys.stdin)['data']['activeTargets']
@@ -311,6 +311,11 @@ offsets=$(prom_query 'sum(kafka_topic_partition_current_offset{topic="outbox.eve
 # per-container серий нет (docs/deviations.md 7); проверяем root-серию CPU.
 cadv=$(prom_query 'container_cpu_usage_seconds_total{id="/",cpu="total"}')
 [[ -n "$cadv" ]] && ok "cadvisor: VM-root CPU-серия присутствует (per-container — см. deviations 7)" || bad "cadvisor root CPU пуст"
+# KafkaValidator (этап 7, requirements.md 15): always-on, группа без коммитов
+# читает topic с начала. Gauge состояния существует всегда (в отличие от
+# счётчиков, которые OTel экспортирует после первой записи).
+validator_state=$(prom_query 'kafka_validator_state')
+[[ "$validator_state" == "1" ]] && ok "kafka-validator: state=1 (running, consumer читает topic)" || bad "kafka_validator_state=$validator_state"
 
 printf '\n\033[1mИТОГ: PASS=%d FAIL=%d\033[0m\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
