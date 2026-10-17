@@ -18,9 +18,8 @@ builder.Services.AddSingleton<CdcStreamingMetrics>();
 builder.Services.AddSingleton<ReplicationGateway>();
 builder.Services.AddSingleton<KafkaPublisher>();
 
-// KafkaFlow — основной API публикации (requirements.md 9). acks=all и
-// enable.idempotence=true заданы явно; topic НЕ создаётся автоматически
-// (requirements.md 3.2: topic создаёт kafka-init).
+// KafkaFlow — основной API публикации (requirements.md 9); topic НЕ создаётся
+// автоматически (requirements.md 3.2: topic создаёт kafka-init).
 var kafkaBrokers = (builder.Configuration["CdcStreaming:Kafka:Brokers"] ?? "kafka1:9092,kafka2:9092,kafka3:9092")
     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 var kafkaTopic = builder.Configuration["CdcStreaming:Kafka:Topic"] ?? "outbox.events";

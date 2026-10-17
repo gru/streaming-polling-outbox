@@ -229,7 +229,7 @@ curl -s $S/health; curl -s $S/ready; curl -s $S/metrics | grep cdc_streaming_
 | Требование §13.3 | Exporter | Метрики |
 |---|---|---|
 | PostgreSQL replication lag | postgres-exporter | `pg_replication_replay_lag_bytes{application_name}` (байты до replay; включает логический walsender `cdc-*` — это серверный WAL lag CDC) |
-| Logical slot state | postgres-exporter | `pg_slot_active{slot_name}`, `pg_slot_wal_retained_bytes` (WAL retention), `pg_slot_flush_lag_bytes`, labels `wal_status`/`plugin`; `pg_slot_safe_wal_size_bytes` — появится при включении `max_slot_wal_keep_size` (WAL Pressure Test) |
+| Logical slot state | postgres-exporter | `pg_slot_active{slot_name}`, `pg_slot_wal_retained_bytes` (WAL retention), `pg_slot_flush_lag_bytes`, labels `wal_status`/`plugin`; `pg_slot_safe_wal_size_bytes` — пустая при `max_slot_wal_keep_size=-1` (появится, только если лимит включат) |
 | WAL retention | postgres-exporter | `pg_wal_position_bytes`, `pg_wal_dir_bytes`/`pg_wal_dir_files`, `pg_slot_wal_retained_bytes` |
 | Kafka broker availability | kafka-exporter | `kafka_brokers` (=3, когда все живы) |
 | Kafka topic offsets | kafka-exporter | `kafka_topic_partition_current_offset{topic,partition}` |
@@ -336,6 +336,63 @@ T4 запись direct (мимо PgBouncer) → T5 rate-limited 200@50/с + ар
 
 Контрактные тесты формата (Writer → конверт → валидатор, без стенда):
 `tests/Integration/` — `dotnet test` (в sdk-контейнере, как остальные).
+
+## HA-тесты (этап 8, requirements.md §14)
+
+Автоматизированные сценарии отказоустойчивости для обеих CDC-арм. После каждой
+инъекции — фактическая сверка содержимого Kafka вердиктом валидатора (§15:
+missing=0, unexpected=0 — обязательные; дубликаты допустимы, at-least-once §10),
+артефакты §13.4 + `ha-report.json` (инъекция, recovery time, ветка исхода,
+счётчики движка) в каталог прогона.
+
+| Тест | Инъекция | Ключевые проверки |
+|---|---|---|
+| HA-001 Failover | `docker compose kill <leader>` под нагрузкой 1200@30/с | выборы лидера, переподключение CDC, written==unique, missing=0, recovery |
+| HA-002 Switchover | `POST /switchover` (Patroni REST, basic-auth) | готовность standby + synced-слот ДО, отсутствие пропусков, recovery |
+| HA-003 Kafka outage | `stop kafka1-3`, запись 600@10/с | writer пишет, `confirmed_flush_lsn` заморожен, удерживаемый WAL растёт, автопродолжение |
+| HA-004 WAL Sender Failure | `kill -9` pid walsender'а (`application_name='cdc-streaming'`) / SQL-сессий (`usename='sys_app'`) | readErrors вырос (стриминг), новый walsender/сессии, missing=0 |
+| HA-005 Restart CDC | рестарт контейнера: R1 до delivery (Kafka стоит), R2/R3 на +15/+20с прогона | перечитка с confirmed LSN, дубликаты считаются, missing=0 |
+| HA-006 Partial Batch Failure | `kill kafka3` в момент публикации | недоставленное переотправлено, missing=0 |
+| HA-007 Broker Failure | `stop kafka3` (graceful) под нагрузкой | доставка не прерывается надолго (RF=3, min.insync.replicas=2) |
+| HA-008 Combined | Kafka стоит + `kill <leader>` | две честные ветки: слот выжил (pass) / потерян (`error_slot`, missing=N — задокументированная невосстановимая потеря, §14) |
+
+WAL Pressure Test (§12.2) исключён решением владельца — не детерминируется
+разумными средствами (см. deviations §9п).
+
+```bash
+./scripts/test/ha-suite.sh --arm streaming            # HA-001..008 по очереди
+./scripts/test/ha-suite.sh --arm polling --tests ha-003,ha-005
+```
+
+Важные механики харнесса (подробности — deviations §9):
+
+- **`synchronized_standby_slots` обновляется сразу после смены лидера** —
+  без этого PG17 держит логический декодинг (обе армы) в ожидании flush от
+  умершего standby, и доставка молча висит в `catchup` (главная грабля этапа).
+- **Graceful switchover при стриминговом CDC виснет, пока жив консюмер слота**:
+  fast shutdown ждёт логический walsender, а тот — отключения клиента; харнесс
+  после 60с рестартует cdc-streaming как операторское лечение (polling не
+  держит соединений — дедлок невозможен; crash-failover не затронут).
+- **haproxy перечитывает DNS pg-нод динамически** (`resolvers docker` в
+  haproxy.cfg): IP нод меняются после kill/start циклов, статический резолв
+  молча уводил все бекенды в Layer4-timeout DOWN (открытие этапа 8,
+  deviations §9о). Смена конфига — `docker compose restart haproxy`.
+- **Полный outage Kafka переводит все KafkaFlow-сервисы (CDC + валидатор) в
+  рестарт-циклы** — нативный SIGSEGV (exit 139) стека KafkaFlow 4.2.0,
+  воспроизведён и изолирован (deviations §9н); гарантии §12.1/§14 при этом
+  проверяемы по слоту PG (confirmed_flush заморожен) и вердиктом после
+  восстановления. Graceful stop одного брокера: доставка не прерывается,
+  типичный простой ~20с (перевыборы лидера партий, HA-007).
+- **`docker compose kill` не перезапускает контейнер** (API-kill = ручная
+  остановка для рестарт-политики) — харнесс возвращает ноду `compose start`'ом
+  после выборов.
+- **Recovery time** = время выборов лидера (REST `/cluster`) + собственная
+  метрика движка `lastRecoveryMs` (waiting→running); для HA-003 — внешний
+  замер от старта Kafka до первого роста messagesDelivered.
+- Харнесс переставляет ПРОФИЛИ arm сам (`stop` другого CDC, `up -d --no-deps`
+  своего); полный матричный прогон — два вызова (по одному на arm).
+- Каждый тест завершается `reconcile`: apply-bootstrap (02-slot/03-reconcile),
+  рестарт CDC при `error_slot`, ожидание synced-копии, canary-прогон.
 
 ## Полезные команды
 
@@ -448,9 +505,8 @@ docs/
 
 ## Что дальше (по плану requirements.md)
 
-Далее: HA-тесты TEST-HA-001..008 (в т.ч. TEST-HA-004 — убийство walsender для
-стриминга; после каждого отказа delivery проверяет KafkaValidator) и WAL Pressure
-Test (§12.2 — метрика `pg_slot_safe_wal_size_bytes` под него уже готова),
-benchmark-циклы A/B (полный wipe между ними, requirements.md 11) и
-сравнительный отчёт. Отложено владельцем на поздний этап: Schema Registry +
+Далее: benchmark-циклы A/B (полный wipe между ними, requirements.md 11) и
+сравнительный отчёт. HA-тесты TEST-HA-001..008 выполнены (этап 8,
+`scripts/test/ha-suite.sh`); WAL Pressure Test исключён решением владельца
+(deviations §9п). Отложено владельцем на поздний этап: Schema Registry +
 Avro-тело сообщения (сейчас body — JSON `jsonb`).

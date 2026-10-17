@@ -18,7 +18,12 @@
          (requirements.md 9); Confluent.Kafka 2.8.0 приходит транзитивно и
          используется только как носитель ProducerConfig, основной API — KafkaFlow.
          Значение acks=all и enable.idempotence=true задаётся через
-         WithAcks + WithProducerConfig (extension из KafkaFlow). -->
+         WithAcks + WithProducerConfig (extension из KafkaFlow).
+         ВАЖНО (этап 8, deviations 9н): стек KafkaFlow 4.2.0+Confluent.Kafka
+         (проверено 2.8.0 и 2.16.0, linux/arm64) нативно SIGSEGV (exit 139) при
+         полной потере Kafka-брокеров после любой продукции — воспроизводимо,
+         вне управляемого кода; рестарт-политика восстанавливает сервис,
+         at-least-once сохраняется (слот держит позицию). -->
     <PackageReference Include="KafkaFlow" Version="4.2.0" />
     <PackageReference Include="KafkaFlow.Extensions.Hosting" Version="4.2.0" />
     <PackageReference Include="KafkaFlow.LogHandler.Console" Version="4.2.0" />
