@@ -432,7 +432,10 @@ Prometheus), дельты счётчиков (errors/retries/reconnects), вер
 Артефакты: `results/raw/<stamp>-benchmark-<arm>/` (полные: отчёт, docker-stats,
 runs/ с result.json+timeseries.csv+validation-verdict.json, cdc-samples/),
 компактные копии для сравнения — `results/benchmark/benchmark-{polling,streaming}.json`
-и `results/benchmark/summary.json` (коммитятся). Методология и ограничения —
+и `results/benchmark/summary.json` (коммитятся); эксперименты чувствительности
+к peek-пачке polling (1000 и 10000 — потолок спеки) —
+`results/benchmark/experiment-peek-batch-*.json` и сводная кривая
+`results/benchmark/peek-batch-scaling.json` (deviations §10з-и). Методология и ограничения —
 deviations §10.
 
 Важно: `wipe.sh` опускает ОБА профиля CDC (`--profile polling --profile

@@ -1,0 +1,62 @@
+{
+  "description": "Дрейн 400k-бэклога (s5) армой polling при разных peek-пачках + стриминг для справки. Механизм: амортизация фиксированной цены цикла peek→publish→ack→advance; изменения спеки 5.2 потолок 10000 changes (SQL+C#). deviations §10з-и.",
+  "facts": {
+    "ceiling": "10000 changes зашит в cdc.peek_outbox_changes (LEAST(...,10000)) и Math.Clamp C#; выше — только правя спеку",
+    "lastPublishMs": {
+      "100": 8.9,
+      "1000": 39.2,
+      "10000": 390.5
+    },
+    "lastReadMs": {
+      "100": 128.8,
+      "1000": 151.0,
+      "10000": 132.8,
+      "note": "цена peek — фиксированные накладные, не объём декодинга"
+    },
+    "msgPerPeek": {
+      "100": 98.8,
+      "1000": 458.7,
+      "10000": 3252.0,
+      "note": "upto_nchanges считает сырые changes; сообщение = INSERT+DELETE; мягкий лимит по коммитам даёт частичные пачки"
+    }
+  },
+  "rows": [
+    {
+      "avgMsgPerSecond": 926.0,
+      "cdcMemMaxBytes": 225443840,
+      "drainMs": 425424,
+      "e2eMeanMs": 152398.8,
+      "label": "polling peek=100 (дефолт, базлайн v2)",
+      "overallMsgPerSecond": 931.2,
+      "peakMsgPerSecond": 5318.1
+    },
+    {
+      "avgMsgPerSecond": 3381.4,
+      "cdcMemMaxBytes": 214538650,
+      "drainMs": 114432,
+      "e2eMeanMs": 45901.2,
+      "label": "polling peek=1000",
+      "overallMsgPerSecond": 3373.6,
+      "peakMsgPerSecond": 7648.2
+    },
+    {
+      "avgMsgPerSecond": 8934.9,
+      "cdcMemMaxBytes": 2010044695,
+      "drainMs": 41309,
+      "e2eMeanMs": 20480.7,
+      "label": "polling peek=10000 (потолок спеки)",
+      "overallMsgPerSecond": 8802.4,
+      "peakMsgPerSecond": 10919.5
+    },
+    {
+      "avgMsgPerSecond": 10932.9,
+      "cdcMemMaxBytes": 2228014285,
+      "drainMs": 31060,
+      "e2eMeanMs": 16472.1,
+      "label": "streaming (справка, базлайн v2)",
+      "overallMsgPerSecond": 10734.5,
+      "peakMsgPerSecond": 12696.1
+    }
+  ],
+  "schema": "streaming-polling-outbox/peek-batch-scaling/v1"
+}
