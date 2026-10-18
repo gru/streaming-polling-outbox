@@ -1,98 +1,190 @@
 {
+  "pollingPeekBatchSize": 10000,
+  "publication": "insert-only (publish='insert', решение владельца; deviations §11)",
+  "resources": {
+    "polling": {
+      "cdc": {
+        "cpuAvgPercent": 3.9,
+        "cpuMaxPercent": 114.2,
+        "memAvgBytes": 265677617,
+        "memMaxBytes": 2134598746,
+        "slices": 174
+      },
+      "kafka": {
+        "cpuAvgPercent": 17.2,
+        "cpuMaxPercent": 199.1,
+        "memAvgBytes": 1287286737,
+        "memMaxBytes": 1666396980,
+        "slices": 174
+      },
+      "postgresql": {
+        "cpuAvgPercent": 6.7,
+        "cpuMaxPercent": 232.0,
+        "memAvgBytes": 326872898,
+        "memMaxBytes": 744698676,
+        "slices": 174
+      },
+      "window": {
+        "fromMs": 1792305698531,
+        "toMs": 1792307033719
+      },
+      "writer": {
+        "cpuAvgPercent": 2.3,
+        "cpuMaxPercent": 159.9,
+        "memAvgBytes": 162797209,
+        "memMaxBytes": 253126246,
+        "slices": 174
+      }
+    },
+    "streaming": {
+      "cdc": {
+        "cpuAvgPercent": 5.2,
+        "cpuMaxPercent": 266.7,
+        "memAvgBytes": 257719179,
+        "memMaxBytes": 2029372047,
+        "slices": 173
+      },
+      "kafka": {
+        "cpuAvgPercent": 17.4,
+        "cpuMaxPercent": 176.5,
+        "memAvgBytes": 1266229466,
+        "memMaxBytes": 1606208717,
+        "slices": 173
+      },
+      "postgresql": {
+        "cpuAvgPercent": 5.7,
+        "cpuMaxPercent": 244.7,
+        "memAvgBytes": 324495784,
+        "memMaxBytes": 743125812,
+        "slices": 173
+      },
+      "window": {
+        "fromMs": 1792307122907,
+        "toMs": 1792308452718
+      },
+      "writer": {
+        "cpuAvgPercent": 2.1,
+        "cpuMaxPercent": 126.5,
+        "memAvgBytes": 160350060,
+        "memMaxBytes": 260990566,
+        "slices": 173
+      }
+    }
+  },
   "scenarios": [
     {
       "polling": {
-        "cdcRateAvg": 50.1,
-        "cdcRatePeak": 96.0,
-        "deliveryTotalMs": 599763,
-        "drainMs": 104,
+        "cdcRateAvg": 50.0,
+        "cdcRateOverall": 50.0,
+        "cdcRatePeak": 95.7,
+        "deliveryTotalMs": 599424,
+        "drainMs": 95,
         "duplicates": 0,
-        "e2eP95Ms": 503.6906
+        "e2eMeanMs": 269.7,
+        "e2eP95Ms": 507.7448
       },
       "scenario": "s1-steady-50",
       "streaming": {
-        "cdcRateAvg": 50.0,
-        "cdcRatePeak": 141.6,
-        "deliveryTotalMs": 599399,
-        "drainMs": 97,
+        "cdcRateAvg": 49.9,
+        "cdcRateOverall": 50.0,
+        "cdcRatePeak": 142.5,
+        "deliveryTotalMs": 600293,
+        "drainMs": 98,
         "duplicates": 0,
-        "e2eP95Ms": 24.17
+        "e2eMeanMs": 37.5,
+        "e2eP95Ms": 31.2561
       }
     },
     {
       "polling": {
-        "cdcRateAvg": 200.1,
-        "cdcRatePeak": 241.3,
-        "deliveryTotalMs": 300907,
-        "drainMs": 1139,
+        "cdcRateAvg": 199.7,
+        "cdcRateOverall": 199.2,
+        "cdcRatePeak": 335.2,
+        "deliveryTotalMs": 301222,
+        "drainMs": 103,
         "duplicates": 0,
-        "e2eP95Ms": 483.2282
+        "e2eMeanMs": 283.6,
+        "e2eP95Ms": 513.3745
       },
       "scenario": "s2-steady-200",
       "streaming": {
-        "cdcRateAvg": 199.7,
-        "cdcRatePeak": 278.8,
-        "deliveryTotalMs": 300025,
-        "drainMs": 111,
+        "cdcRateAvg": 199.9,
+        "cdcRateOverall": 199.8,
+        "cdcRatePeak": 287.1,
+        "deliveryTotalMs": 300247,
+        "drainMs": 109,
         "duplicates": 0,
-        "e2eP95Ms": 20.1998
+        "e2eMeanMs": 18.4,
+        "e2eP95Ms": 21.3083
       }
     },
     {
       "polling": {
-        "cdcRateAvg": 4588.6,
-        "cdcRatePeak": 6089.4,
-        "deliveryTotalMs": 4262,
-        "drainMs": 2147,
+        "cdcRateAvg": 7750.8,
+        "cdcRateOverall": 6142.5,
+        "cdcRatePeak": 10772.2,
+        "deliveryTotalMs": 3256,
+        "drainMs": 1147,
         "duplicates": 0,
-        "e2eP95Ms": 3414.4231
+        "e2eMeanMs": 210.1,
+        "e2eP95Ms": 2255.0384
       },
       "scenario": "s3-burst",
       "streaming": {
-        "cdcRateAvg": 10219.7,
-        "cdcRatePeak": 10219.7,
-        "deliveryTotalMs": 2222,
-        "drainMs": 107,
+        "cdcRateAvg": 9306.7,
+        "cdcRateOverall": 9053.9,
+        "cdcRatePeak": 9742.1,
+        "deliveryTotalMs": 2209,
+        "drainMs": 97,
         "duplicates": 0,
-        "e2eP95Ms": 1575.8313
+        "e2eMeanMs": 809.4,
+        "e2eP95Ms": 1514.2678
       }
     },
     {
       "polling": {
         "cdcRateAvg": 50.0,
-        "cdcRatePeak": 95.2,
-        "deliveryTotalMs": 299360,
-        "drainMs": 98,
+        "cdcRateOverall": 50.1,
+        "cdcRatePeak": 95.7,
+        "deliveryTotalMs": 299335,
+        "drainMs": 97,
         "duplicates": 0,
-        "e2eP95Ms": 529.8776
+        "e2eMeanMs": 280.3,
+        "e2eP95Ms": 525.4759
       },
       "scenario": "s4-large-4k",
       "streaming": {
         "cdcRateAvg": 50.0,
-        "cdcRatePeak": 95.9,
-        "deliveryTotalMs": 300233,
-        "drainMs": 103,
+        "cdcRateOverall": 50.1,
+        "cdcRatePeak": 95.3,
+        "deliveryTotalMs": 299515,
+        "drainMs": 98,
         "duplicates": 0,
-        "e2eP95Ms": 41.4246
+        "e2eMeanMs": 34.8,
+        "e2eP95Ms": 36.0318
       }
     },
     {
       "polling": {
-        "cdcRateAvg": 926.0,
-        "cdcRatePeak": 5318.1,
-        "deliveryTotalMs": 429557,
-        "drainMs": 425424,
+        "cdcRateAvg": 9542.7,
+        "cdcRateOverall": 9413.8,
+        "cdcRatePeak": 11578.9,
+        "deliveryTotalMs": 42491,
+        "drainMs": 38348,
         "duplicates": 0,
-        "e2eP95Ms": 425188.3626
+        "e2eMeanMs": 18396.8,
+        "e2eP95Ms": 37996.6839
       },
       "scenario": "s5-throughput",
       "streaming": {
-        "cdcRateAvg": 10932.9,
-        "cdcRatePeak": 12696.1,
-        "deliveryTotalMs": 37263,
-        "drainMs": 31060,
+        "cdcRateAvg": 10904.5,
+        "cdcRateOverall": 10690.3,
+        "cdcRatePeak": 12349.8,
+        "deliveryTotalMs": 37417,
+        "drainMs": 33253,
         "duplicates": 0,
-        "e2eP95Ms": 32398.5955
+        "e2eMeanMs": 15548.8,
+        "e2eP95Ms": 32495.3066
       }
     }
   ],

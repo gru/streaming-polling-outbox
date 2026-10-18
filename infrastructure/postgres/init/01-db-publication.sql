@@ -38,12 +38,18 @@ CREATE TABLE IF NOT EXISTS public.outbox_messages (
 -- pgoutput эмитит только изменения таблиц, входящих в publication,
 -- поэтому publication НЕ пустая и содержит outbox-таблицу (отклонение от
 -- requirements.md 4.3 «она не должна включать таблицы»).
+-- publish='insert' (решение владельца, этап 9): Writer пишет INSERT+DELETE
+-- в одной транзакции, но DELETE из публикации исключён — pgoutput не эмитит
+-- их вовсе, слот несёт 1 change на сообщение вместо 2 (раньше CDC получал
+-- обе записи и игнорировал Delete в парсере). SET (publish=...) не трогает
+-- состав таблиц (в отличие от SET TABLE) и идемпотентен.
 SELECT 'CREATE PUBLICATION outbox_publication' WHERE NOT EXISTS (SELECT FROM pg_publication WHERE pubname = 'outbox_publication') \gexec
 SELECT format('ALTER PUBLICATION outbox_publication ADD TABLE %I.%I', 'public', 'outbox_messages')
 WHERE NOT EXISTS (
   SELECT FROM pg_publication_tables
   WHERE pubname = 'outbox_publication' AND schemaname = 'public' AND tablename = 'outbox_messages'
 ) \gexec
+ALTER PUBLICATION outbox_publication SET (publish = 'insert');
 
 -- Отзыв избыточных прав PUBLIC, затем явные минимальные GRANT (requirements.md 5.1).
 REVOKE ALL ON DATABASE outbox FROM PUBLIC;
@@ -60,8 +66,9 @@ GRANT USAGE ON SCHEMA public TO sys_app;     -- будущие SECURITY DEFINER-
 -- Минимум для Writer: INSERT + DELETE (id генерирует клиент; UPDATE не нужен).
 -- Writer держит таблицу ПУСТОЙ (решение владельца): INSERT и DELETE выполняются
 -- в одной транзакции — строка существует только внутри транзакции, а сообщение
--- живёт в WAL: logical decoding (pgoutput) эмитит оба изменения, CDC читает их
--- через слот, таблица не растёт (проверено: peek видит B/R/I/D/C той же транзакции).
+-- живёт в WAL. В publication включён только INSERT (publish='insert' выше):
+-- слот несёт по одному change на сообщение, DELETE-записи не эмитятся вовсе
+-- (таблица не растёт; peek/стриминг видят B/R/I/C транзакций без D).
 GRANT INSERT, DELETE ON public.outbox_messages TO sys_writer;
 
 -- Колоночный SELECT(id): PostgreSQL требует SELECT на колонки, читаемые в WHERE
